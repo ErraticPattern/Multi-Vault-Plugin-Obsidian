@@ -89,5 +89,37 @@ Go to **Settings > Multi-Vault Navigator** to configure:
 
 ---
 
+## Building from source
+
+```bash
+npm install
+npm run dev    # watch build; auto-copies output to vaults in deploy-targets.json
+npm run build  # type-check + production build
+```
+
+To get automatic local deploys on every build, copy `deploy-targets.example.json`
+to `deploy-targets.json` (gitignored) and list your own vaults'
+`.obsidian/plugins/multi-vault-navigator` folders. Without that file the build
+just produces `main.js` in the repo root.
+
+Releases are built by CI: pushing a version tag (`git tag 2.3.0 && git push --tags`)
+creates a GitHub release with `main.js`, `manifest.json`, and `styles.css` attached.
+
+### Version compatibility
+
+This fork runs on Obsidian **1.12.7 and newer**. The settings tab uses the 1.13
+declarative Settings API natively and falls back to a manual `display()` renderer
+on older versions.
+
+---
+
+## Contributors
+
+- [Hir43th](https://github.com/Finarfin12) — original author
+- ErraticPattern — fork owner
+- Claude Fable 5 (Anthropic) — cross-vault link engine, 1.12.x compat shim, build/release pipeline, security audit
+
+---
+
 ## License
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
