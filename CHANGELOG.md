@@ -2,6 +2,19 @@
 
 All notable changes to the **Multi-Vault Navigator** plugin will be documented in this file.
 
+## [2.3.0] - 2026-07-23 (Fork: ErraticPattern)
+### Fixed
+- `[[vault::note]]` cross-vault links now actually open the target note in both Reading View and Live Preview. Previously Obsidian core parsed them as unresolved wikilinks before the plugin's postprocessor ran, so clicking triggered "create new note" in both modes.
+- Settings tab works on Obsidian 1.12.x again via a `display()` compat shim, while remaining compatible with the 1.13+ declarative settings API. `setDestructive()` falls back to `setWarning()` on older versions.
+
+### Added
+- Vault badge styling for cross-vault links in Reading View; alias syntax `[[vault::note|alias]]` supported.
+- GitHub Actions release workflow: tagging `x.y.z` builds and attaches `main.js`, `manifest.json`, `styles.css`.
+
+### Changed
+- Local dev deploys via gitignored `deploy-targets.json` (see `deploy-targets.example.json`) instead of a hardcoded path.
+- `minAppVersion` corrected to 1.12.7.
+
 ## [2.1.0] - 2026-06-06 (Feature V0.2 & Security Audit)
 ### Added
 - **Tag Filter**: Type `#tag` directly inside the Command Center search bar to filter results exclusively by metadata/inline tags.
