@@ -76,8 +76,9 @@ Status: Approved by owner (chat, 2026-07-23)
   `manifest.json`, `styles.css` to each after build/rebuild. Absent → build
   only, no copy, no error.
 - Commit `deploy-targets.example.json` documenting the format.
-- Owner's real file lists the four vault plugin dirs under
-  `C:\Users\joaop\obsidian\<vault>\.obsidian\plugins\multi-vault-navigator`.
+- Owner's real file lists the four vault plugin dirs
+  (`<vaults-root>\<vault>\.obsidian\plugins\multi-vault-navigator`); kept
+  local, never committed.
 - Copy also runs on watch rebuilds in dev mode.
 
 ### 4. Release pipeline & versioning

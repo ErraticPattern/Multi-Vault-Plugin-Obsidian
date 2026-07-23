@@ -14,7 +14,7 @@
 - `manifest.json`/`package.json` version: `2.3.0`; `minAppVersion`: `1.12.7`.
 - No new runtime dependencies. No test framework (owner-approved).
 - No monkey-patching of Obsidian internals.
-- Repo root: `C:\Users\joaop\git\ErraticPattern\Multi-Vault-Plugin-Obsidian`.
+- Repo root: local clone of `ErraticPattern/Multi-Vault-Plugin-Obsidian`.
 - All commits end with `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
 - Verification command for every code task: `npm run build` → expect exit 0, `main.js` regenerated.
 
@@ -176,14 +176,9 @@ if (prod) {
 
 - [ ] **Step 3: Create owner's `deploy-targets.json`** (untracked)
 
-```json
-[
-  "C:\\Users\\joaop\\obsidian\\ideas\\.obsidian\\plugins\\multi-vault-navigator",
-  "C:\\Users\\joaop\\obsidian\\hobbies\\.obsidian\\plugins\\multi-vault-navigator",
-  "C:\\Users\\joaop\\obsidian\\mathematics\\.obsidian\\plugins\\multi-vault-navigator",
-  "C:\\Users\\joaop\\obsidian\\medicine\\.obsidian\\plugins\\multi-vault-navigator"
-]
-```
+JSON array of the owner's four vault plugin folders
+(`<vaults-root>\<vault>\.obsidian\plugins\multi-vault-navigator`). Local
+paths only — the file is gitignored and must never be committed.
 
 - [ ] **Step 4: Verify**
 
