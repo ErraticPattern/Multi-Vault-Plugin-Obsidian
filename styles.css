@@ -684,3 +684,26 @@ button.mvn-btn-small:hover {
 .mvn-ui-modern .mvn-sp-results {
   gap: 16px;
 }
+
+/* Cross-vault links */
+.mvn-cross-vault-link {
+  color: var(--link-color);
+  text-decoration-line: var(--link-decoration);
+  cursor: var(--cursor-link);
+}
+
+.mvn-cross-vault-link:hover {
+  color: var(--link-color-hover);
+}
+
+.mvn-vault-badge {
+  display: inline-block;
+  font-size: 0.75em;
+  line-height: 1.4;
+  padding: 0 0.35em;
+  margin-right: 0.35em;
+  border-radius: var(--radius-s);
+  background-color: var(--tag-background);
+  color: var(--tag-color);
+  vertical-align: baseline;
+}
