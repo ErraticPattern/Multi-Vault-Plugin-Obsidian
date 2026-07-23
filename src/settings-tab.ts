@@ -1,8 +1,26 @@
-import { App, Notice, PluginSettingTab, Setting, SettingDefinitionItem, SettingGroupItem } from 'obsidian';
+import { App, ButtonComponent, Notice, PluginSettingTab, Setting, SettingDefinitionItem, SettingGroupItem, requireApiVersion } from 'obsidian';
 import { VaultRegistry } from './vault-registry';
 import { Indexer } from './indexer/indexer';
 import MultiVaultNavigatorPlugin from './main';
 import { ExcludeSuggestModal } from './modals/exclude-suggest-modal';
+
+// Loose shape for manually rendering 1.13-style setting definitions on 1.12.x.
+type ManualRenderItem = {
+  name?: string | DocumentFragment;
+  desc?: string | DocumentFragment;
+  render?: (setting: Setting, group?: unknown) => unknown;
+};
+
+// setDestructive() only exists on Obsidian 1.13+; fall back to setWarning().
+function markButtonDestructive(button: ButtonComponent): ButtonComponent {
+  const maybe = button as ButtonComponent & { setDestructive?: () => unknown };
+  if (typeof maybe.setDestructive === 'function') {
+    maybe.setDestructive();
+  } else {
+    button.setWarning();
+  }
+  return button;
+}
 
 export class MultiVaultSettingsTab extends PluginSettingTab {
   plugin: MultiVaultNavigatorPlugin;
@@ -16,6 +34,51 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
     this.plugin = plugin;
     this.vaultRegistry = vaultRegistry;
     this.indexer = indexer;
+  }
+
+  // Obsidian 1.13+ renders getSettingDefinitions() natively and never calls
+  // display(). 1.12.x has no declarative support and calls display() — render
+  // the same schema manually there so one codebase serves both versions.
+  display(): void {
+    if (requireApiVersion('1.13.0')) return;
+    this.renderDefinitionsManually();
+  }
+
+  update(): void {
+    const nativeUpdate = (PluginSettingTab.prototype as unknown as { update?: () => void }).update;
+    if (requireApiVersion('1.13.0') && typeof nativeUpdate === 'function') {
+      nativeUpdate.call(this);
+    } else {
+      this.renderDefinitionsManually();
+    }
+  }
+
+  private renderDefinitionsManually(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+    for (const definition of this.getSettingDefinitions()) {
+      if ('type' in definition && (definition.type === 'group' || definition.type === 'list')) {
+        if (definition.heading) {
+          new Setting(containerEl).setName(definition.heading).setHeading();
+        }
+        for (const item of definition.items ?? []) {
+          this.renderItemManually(containerEl, item as ManualRenderItem);
+        }
+      } else {
+        this.renderItemManually(containerEl, definition as ManualRenderItem);
+      }
+    }
+  }
+
+  private renderItemManually(containerEl: HTMLElement, item: ManualRenderItem): void {
+    const setting = new Setting(containerEl);
+    if (item.name) setting.setName(item.name);
+    if (item.desc) setting.setDesc(item.desc);
+    try {
+      item.render?.(setting);
+    } catch (error) {
+      console.error('Multi-Vault Navigator: failed to render setting', item.name, error);
+    }
   }
 
   getSettingDefinitions(): SettingDefinitionItem[] {
@@ -68,7 +131,7 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
             )
             .addButton(button => {
               button.setButtonText("Remove");
-              button.setDestructive();
+              markButtonDestructive(button);
               return button.onClick(async () => {
                 this.vaultRegistry.removeVault(vault.id);
                 await this.plugin.saveSettings();
@@ -143,9 +206,8 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
             name: "Clear Index",
             desc: "Wipe the cross-vault index cache entirely.",
             render: (setting: Setting) => {
-              setting.addButton(btn => btn
+              setting.addButton(btn => markButtonDestructive(btn)
                 .setButtonText("Clear Cache")
-                .setDestructive()
                 .onClick(async () => {
                   await this.indexer.clearIndex();
                   this.plugin.refreshSearchEngine();
