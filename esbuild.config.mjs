@@ -1,6 +1,8 @@
 import esbuild from "esbuild";
 import process from "process";
 import { builtinModules } from "module";
+import fs from "fs";
+import path from "path";
 
 const banner =
 `/*
@@ -10,6 +12,46 @@ if you want to view the source, please visit the github repository of this plugi
 `;
 
 const prod = (process.argv[2] === "production");
+
+// Copy build output to local vault plugin folders listed in deploy-targets.json
+// (gitignored; see deploy-targets.example.json). Absent file = build only.
+const deployConfigFile = "deploy-targets.json";
+let deployTargets = [];
+if (fs.existsSync(deployConfigFile)) {
+	try {
+		const parsed = JSON.parse(fs.readFileSync(deployConfigFile, "utf8"));
+		if (Array.isArray(parsed) && parsed.every(t => typeof t === "string")) {
+			deployTargets = parsed;
+		} else {
+			console.error(`${deployConfigFile} must be a JSON array of strings; ignoring.`);
+		}
+	} catch (e) {
+		console.error(`Could not parse ${deployConfigFile}:`, e);
+	}
+}
+
+function copyToTargets() {
+	for (const dir of deployTargets) {
+		try {
+			fs.mkdirSync(dir, { recursive: true });
+			for (const file of ["main.js", "manifest.json", "styles.css"]) {
+				fs.copyFileSync(file, path.join(dir, file));
+			}
+			console.log(`Copied build to ${dir}`);
+		} catch (e) {
+			console.error(`Copy to ${dir} failed:`, e);
+		}
+	}
+}
+
+const copyPlugin = {
+	name: "copy-to-vaults",
+	setup(build) {
+		build.onEnd(result => {
+			if (result.errors.length === 0) copyToTargets();
+		});
+	}
+};
 
 const context = await esbuild.context({
 	banner: {
@@ -38,31 +80,12 @@ const context = await esbuild.context({
 	sourcemap: prod ? false : "inline",
 	treeShaking: true,
 	outfile: "main.js",
+	plugins: [copyPlugin],
 });
-
-import fs from "fs";
-import path from "path";
 
 if (prod) {
 	await context.rebuild();
+	process.exit(0);
 } else {
 	await context.watch();
-}
-
-// Auto-copy to target vault
-const targetDir = "C:\\hermes-memory\\.obsidian\\plugins\\multi-vault-navigator";
-if (!fs.existsSync(targetDir)) {
-	fs.mkdirSync(targetDir, { recursive: true });
-}
-try {
-	fs.copyFileSync("main.js", path.join(targetDir, "main.js"));
-	fs.copyFileSync("manifest.json", path.join(targetDir, "manifest.json"));
-	fs.copyFileSync("styles.css", path.join(targetDir, "styles.css"));
-	console.log(`\n✅ Successfully copied build files to: ${targetDir}`);
-} catch (e) {
-	console.error("Failed to copy files to target vault:", e);
-}
-
-if (prod) {
-	process.exit(0);
 }
