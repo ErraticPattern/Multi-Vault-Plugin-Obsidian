@@ -106,8 +106,10 @@ export class ExternalFileView extends ItemView {
         const decodedSrc = decodeURIComponent(src);
         const absPath = path.normalize(path.join(basePath, decodedSrc));
         
-        // Security: Prevent path traversal outside the vault boundary
-        if (!absPath.startsWith(path.normalize(vaultRoot))) return;
+        // Security: Prevent path traversal outside the vault boundary.
+        // Case-insensitive compare: Windows paths are case-insensitive, so a
+        // differently-cased prefix must not bypass (or spuriously fail) the check.
+        if (!absPath.toLowerCase().startsWith(path.normalize(vaultRoot).toLowerCase())) return;
 
         const localUri = `app://local/${absPath.replace(/\\/g, '/')}`;
         img.src = localUri;

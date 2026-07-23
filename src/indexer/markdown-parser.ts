@@ -86,7 +86,9 @@ export class MarkdownParser {
   }
 
   private parseSimpleYaml(yaml: string): Record<string, unknown> {
-    const result: Record<string, unknown> = {};
+    // Null prototype: frontmatter keys come from note content; a "__proto__"
+    // key must land as a plain property, never touch the prototype chain.
+    const result: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     const lines = yaml.split('\n');
     let currentArrayKey: string | null = null;
     let currentArray: string[] = [];
