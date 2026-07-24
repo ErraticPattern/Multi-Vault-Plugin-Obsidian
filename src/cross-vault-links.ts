@@ -59,8 +59,19 @@ function rewriteReadingViewAnchor(plugin: MultiVaultNavigatorPlugin, anchor: HTM
   anchor.addClass('mvn-cross-vault-link');
   anchor.removeAttribute('data-href');
   anchor.removeAttribute('href');
-  anchor.createSpan({ cls: 'mvn-vault-badge', text: ref.vaultName });
+  if (plugin.settings.showCrossVaultBadge !== false) {
+    anchor.createSpan({ cls: 'mvn-vault-badge', text: ref.vaultName });
+  }
   anchor.appendText(label);
+  if (plugin.settings.useVaultColorForLinks) {
+    const vaultColor = plugin.vaultRegistry
+      .getVaults()
+      .find(v => v.name.toLowerCase() === ref.vaultName.toLowerCase())?.color;
+    if (vaultColor) {
+      anchor.addClass('mvn-vault-colored');
+      anchor.style.setProperty('--mvn-vault-color', vaultColor);
+    }
+  }
 
   anchor.addEventListener('click', (e) => {
     e.preventDefault();

@@ -2,6 +2,10 @@
 
 All notable changes to the **Multi-Vault Navigator** plugin will be documented in this file.
 
+## [2.4.0] - 2026-07-24 (Fork: ErraticPattern)
+### Added
+- Cross-vault link appearance settings (Reading View): toggle the vault-name badge on or off (default: on), and optionally color each link with its vault's configured color.
+
 ## [2.3.0] - 2026-07-23 (Fork: ErraticPattern)
 ### Fixed
 - `[[vault::note]]` cross-vault links now actually open the target note in both Reading View and Live Preview. Previously Obsidian core parsed them as unresolved wikilinks before the plugin's postprocessor ran, so clicking triggered "create new note" in both modes.

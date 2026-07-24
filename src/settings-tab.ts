@@ -294,6 +294,38 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
       },
       {
         type: 'group',
+        heading: 'Cross-Vault Links',
+        items: [
+          {
+            name: "Show vault badge",
+            desc: "Prefix [[vault::note]] links with a small badge showing the vault name. Applies in Reading View; re-open the note to see the change.",
+            render: (setting: Setting) => {
+              setting.addToggle(toggle => toggle
+                .setValue(this.plugin.settings.showCrossVaultBadge !== false)
+                .onChange(async (value) => {
+                  this.plugin.settings.showCrossVaultBadge = value;
+                  await this.plugin.saveSettings();
+                })
+              );
+            }
+          },
+          {
+            name: "Use vault color for links",
+            desc: "Color each cross-vault link with the color configured for its vault above. Vaults without a color keep the theme's link color. Applies in Reading View; re-open the note to see the change.",
+            render: (setting: Setting) => {
+              setting.addToggle(toggle => toggle
+                .setValue(this.plugin.settings.useVaultColorForLinks === true)
+                .onChange(async (value) => {
+                  this.plugin.settings.useVaultColorForLinks = value;
+                  await this.plugin.saveSettings();
+                })
+              );
+            }
+          }
+        ]
+      },
+      {
+        type: 'group',
         heading: 'Appearance',
         items: [
           {

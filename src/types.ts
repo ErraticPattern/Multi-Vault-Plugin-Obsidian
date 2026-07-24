@@ -38,6 +38,8 @@ export interface MultiVaultSettings {
   savedSearches: { id: string, name: string, query: string }[];
   pinnedFiles: string[];
   uiStyle?: 'classic' | 'modern';
+  showCrossVaultBadge: boolean;
+  useVaultColorForLinks: boolean;
 }
 
 export interface IndexCache {
@@ -56,5 +58,7 @@ export const DEFAULT_SETTINGS: MultiVaultSettings = {
   },
   savedSearches: [],
   pinnedFiles: [],
-  uiStyle: 'classic'
+  uiStyle: 'classic',
+  showCrossVaultBadge: true,
+  useVaultColorForLinks: false
 };

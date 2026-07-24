@@ -707,3 +707,12 @@ button.mvn-btn-small:hover {
   color: var(--tag-color);
   vertical-align: baseline;
 }
+
+.mvn-cross-vault-link.mvn-vault-colored,
+.mvn-cross-vault-link.mvn-vault-colored:hover {
+  color: var(--mvn-vault-color);
+}
+
+.mvn-cross-vault-link.mvn-vault-colored:hover {
+  filter: brightness(1.15);
+}
