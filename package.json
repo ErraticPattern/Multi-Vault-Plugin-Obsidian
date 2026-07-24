@@ -1,6 +1,6 @@
 {
   "name": "multi-vault-navigator",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "Cross-vault search and navigation.",
   "main": "main.js",
   "scripts": {
@@ -14,6 +14,10 @@
     "vault"
   ],
   "author": "Hir43th",
+  "contributors": [
+    "ErraticPattern (https://github.com/ErraticPattern)",
+    "Claude Fable 5 <noreply@anthropic.com> (https://claude.com/claude-code)"
+  ],
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.11.0",
