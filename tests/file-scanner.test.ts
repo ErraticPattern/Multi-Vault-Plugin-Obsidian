@@ -40,6 +40,21 @@ describe('FileScanner.scanFileAsync', () => {
     expect(await scanner.scanFileAsync(vault, '.obsidian/Note.md')).toBeNull();
   });
 
+  it('does not prune ancestors of a nested include match', async () => {
+    const { root, vault } = await fixture();
+    await mkdir(path.join(root, 'Notes', 'Important-2026'), { recursive: true });
+    await writeFile(path.join(root, 'Notes', 'Important-2026', 'Nested.md'), 'Nested');
+    vault.includePatterns = ['Important-2026'];
+    vault.excludePatterns = [];
+    const scanner = new FileScanner([]);
+
+    const scanned = await scanner.scanVaultAsync(vault);
+
+    expect(scanned.map((file) => file.relativePath)).toEqual([
+      'Notes/Important-2026/Nested.md',
+    ]);
+  });
+
   it('applies global excludes to direct and full scans', async () => {
     const { vault } = await fixture();
     vault.includePatterns = [];

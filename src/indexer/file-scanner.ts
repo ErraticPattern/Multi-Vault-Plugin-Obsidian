@@ -19,16 +19,21 @@ export class FileScanner {
     this.globalExcludes = globalExcludes;
   }
 
-  public isPathIncluded(vault: VaultConfig, relativePath: string): boolean {
-    const normalized = relativePath.replace(/\\/g, '/');
-    const lower = normalized.toLowerCase();
+  private isPathExcluded(vault: VaultConfig, relativePath: string): boolean {
+    const lower = relativePath.replace(/\\/g, '/').toLowerCase();
     const segments = lower.split('/');
-    if (segments.some((segment) => this.defaultExcludes.has(segment))) return false;
+    if (segments.some((segment) => this.defaultExcludes.has(segment))) return true;
     const fileName = path.posix.basename(lower);
-    const excludes = [...this.globalExcludes, ...(vault.excludePatterns || [])]
+    return [...this.globalExcludes, ...(vault.excludePatterns || [])]
       .map((pattern) => pattern.trim().toLowerCase())
-      .filter(Boolean);
-    if (excludes.some((pattern) => lower.includes(pattern) || fileName.includes(pattern))) return false;
+      .filter(Boolean)
+      .some((pattern) => lower.includes(pattern) || fileName.includes(pattern));
+  }
+
+  public isPathIncluded(vault: VaultConfig, relativePath: string): boolean {
+    if (this.isPathExcluded(vault, relativePath)) return false;
+    const lower = relativePath.replace(/\\/g, '/').toLowerCase();
+    const fileName = path.posix.basename(lower);
     const includes = (vault.includePatterns || [])
       .map((pattern) => pattern.trim().toLowerCase())
       .filter(Boolean);
@@ -85,11 +90,15 @@ export class FileScanner {
       for (const entry of entries) {
         const fullPath = path.join(dir, entry.name);
         const relativePath = path.relative(rootPath, fullPath).replace(/\\/g, '/');
-        if (!this.isPathIncluded(vault, relativePath)) continue;
+        if (this.isPathExcluded(vault, relativePath)) continue;
 
         if (entry.isDirectory()) {
           await walk(fullPath);
-        } else if (entry.isFile() && entry.name.endsWith('.md')) {
+        } else if (
+          entry.isFile() &&
+          entry.name.endsWith('.md') &&
+          this.isPathIncluded(vault, relativePath)
+        ) {
           try {
             const stats = await fs.promises.stat(fullPath);
             files.push({
