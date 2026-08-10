@@ -153,7 +153,7 @@ describe('migration picker and review view models', () => {
 });
 
 describe('MigrationController', () => {
-  it('plans a nested-folder move and refreshes the index only after execution', async () => {
+  it('plans a nested-folder move and incrementally updates only changed index entries', async () => {
     const source = testFile('Projects/Zerotier.md');
     const eeg = testFile('Notes/EEG.md');
     const index = testFile('Notes/Index.md');
@@ -193,6 +193,7 @@ describe('MigrationController', () => {
       { id: 'math', name: 'mathematics', path: 'C:/vaults/mathematics', enabled: true },
     ];
     let refreshes = 0;
+    const appliedMutations: unknown[] = [];
     const indexer = {
       getIndexedFiles: () => files.map((file) => ({
         id: file.path, vaultId: 'ideas', vaultName: 'ideas',
@@ -200,6 +201,7 @@ describe('MigrationController', () => {
         basename: file.basename, extension: '.md', mtime: 0, size: 0,
       })),
       buildFullIndex: async () => { refreshes += 1; },
+      applyMutations: async (mutations: unknown[]) => { appliedMutations.push(...mutations); },
     };
     const registry = {
       getCurrentVaultId: () => 'ideas',
@@ -221,7 +223,37 @@ describe('MigrationController', () => {
     expect(plan.backlinkEdits[0].updatedContent).toBe('See [[mathematics::Zerotier]].');
     expect(refreshes).toBe(0);
 
-    await controller.execute(plan);
-    expect(refreshes).toBe(1);
+    const result = await controller.execute(plan);
+    expect(result.indexUpdated).toBe(true);
+    expect(refreshes).toBe(0);
+    expect(appliedMutations).toEqual([
+      { kind: 'remove', vaultId: 'ideas', relativePath: 'Projects/Zerotier.md' },
+      { kind: 'upsert', vaultId: 'math', relativePath: 'Notes/Zerotier.md' },
+      { kind: 'upsert', vaultId: 'ideas', relativePath: 'Notes/Index.md' },
+    ]);
+  });
+
+  it('reports a post-commit index failure without reporting migration rollback', async () => {
+    const io = new ControllerIo();
+    io.source.set('Source.md', 'Source.');
+    const controller = new MigrationController(
+      { metadataCache: { resolvedLinks: {} } } as never,
+      {} as never,
+      { applyMutations: async () => { throw new Error('cache unavailable'); } } as never,
+      () => io,
+    );
+    const migrationPlan = {
+      mode: 'relink', sourcePath: 'Source.md', sourceOriginalContent: 'Source.',
+      destinationAbsolutePath: null, destinationRelativePath: null, destinationContent: null,
+      backlinkEdits: [], outgoingLinksRewritten: 0, backlinksRewritten: 0, skipped: [],
+      indexMutations: [{ kind: 'upsert', vaultId: 'ideas', relativePath: 'Index.md' }],
+    } as never;
+
+    const result = await controller.execute(migrationPlan);
+
+    expect(result).toMatchObject({
+      mode: 'relink', indexUpdated: false, indexError: 'cache unavailable',
+    });
+    expect(io.source.get('Source.md')).toBe('Source.');
   });
 });

@@ -4,6 +4,13 @@ import { FileScanner } from './file-scanner';
 import { MarkdownParser } from './markdown-parser';
 import { IndexStore } from './index-store';
 import { IndexedFile, MultiVaultSettings } from '../types';
+import { deduplicateMutations, type IndexMutation } from './index-mutations';
+
+export interface IndexerDependencies {
+  scanner: FileScanner;
+  parser: MarkdownParser;
+  store: IndexStore;
+}
 
 export class Indexer {
   private app: App;
@@ -18,14 +25,19 @@ export class Indexer {
   private isIndexing: boolean = false;
   private lastIndexTime: number = 0;
 
-  constructor(app: App, vaultRegistry: VaultRegistry, settings: MultiVaultSettings) {
+  constructor(
+    app: App,
+    vaultRegistry: VaultRegistry,
+    settings: MultiVaultSettings,
+    dependencies: Partial<IndexerDependencies> = {},
+  ) {
     this.app = app;
     this.vaultRegistry = vaultRegistry;
     this.settings = settings;
 
-    this.scanner = new FileScanner(this.settings.indexOptions.globalExcludePatterns || []);
-    this.parser = new MarkdownParser(this.settings.indexOptions.maxPreviewChars);
-    this.store = new IndexStore(this.app);
+    this.scanner = dependencies.scanner ?? new FileScanner(this.settings.indexOptions.globalExcludePatterns || []);
+    this.parser = dependencies.parser ?? new MarkdownParser(this.settings.indexOptions.maxPreviewChars);
+    this.store = dependencies.store ?? new IndexStore(this.app);
   }
 
   public async initialize(): Promise<void> {
@@ -35,6 +47,34 @@ export class Indexer {
 
   public getIndexedFiles(): IndexedFile[] {
     return this.indexedFiles;
+  }
+
+  public async applyMutations(mutations: IndexMutation[]): Promise<void> {
+    const filesByIdentity = new Map(this.indexedFiles.map((file) => [
+      `${file.vaultId}:${file.relativePath.toLowerCase()}`,
+      file,
+    ]));
+    for (const mutation of deduplicateMutations(mutations)) {
+      const identity = `${mutation.vaultId}:${mutation.relativePath.toLowerCase()}`;
+      if (mutation.kind === 'remove') {
+        filesByIdentity.delete(identity);
+        continue;
+      }
+      const vault = this.vaultRegistry.getVaultById(mutation.vaultId);
+      if (!vault) throw new Error(`Vault is not configured: ${mutation.vaultId}`);
+      const entry = await this.scanner.scanFileAsync(vault, mutation.relativePath);
+      if (!entry) {
+        filesByIdentity.delete(identity);
+        continue;
+      }
+      const indexed = await this.parser.parseMarkdownFileAsync(entry, vault);
+      filesByIdentity.set(identity, indexed);
+    }
+    this.indexedFiles = [...filesByIdentity.values()];
+    await this.store.saveIndex(
+      this.indexedFiles,
+      this.settings.indexOptions.storeSnippetsInCache !== false,
+    );
   }
 
   public async buildFullIndex(showNotice = false): Promise<void> {

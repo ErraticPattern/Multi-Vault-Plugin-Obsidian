@@ -13,8 +13,14 @@ import {
   createMigrationPlanFingerprint,
   isMigrationPlanFingerprintCurrent,
 } from './prepared-plan-cache';
+import type { IndexMutation } from '../indexer/index-mutations';
 
 export type MigrationIoFactory = () => MigrationIo;
+
+export interface MigrationControllerExecutionResult extends MigrationExecutionResult {
+  indexUpdated: boolean;
+  indexError?: string;
+}
 
 export function resolveRelinkTargetRelativePath(
   sourceBasename: string,
@@ -63,7 +69,24 @@ export class MigrationController {
       targetIndexedFiles: this.indexedMarkdownFiles(targetVault.id),
       preserveLinks,
     });
-    return this.withFingerprint(activeFile, plan);
+    const indexMutations: IndexMutation[] = [
+      ...(mode === 'move' ? [{
+        kind: 'remove' as const,
+        vaultId: sourceVault.id,
+        relativePath: activeFile.path,
+      }] : []),
+      {
+        kind: 'upsert',
+        vaultId: targetVault.id,
+        relativePath: destination.relativePath,
+      },
+      ...(mode === 'move' ? plan.backlinkEdits.map((edit) => ({
+        kind: 'upsert' as const,
+        vaultId: sourceVault.id,
+        relativePath: edit.path,
+      })) : []),
+    ];
+    return this.withMetadata(activeFile, plan, indexMutations);
   }
 
   async planRelink(
@@ -89,7 +112,13 @@ export class MigrationController {
       notes,
       targetIndexedFiles,
     });
-    return this.withFingerprint(activeFile, plan);
+    const sourceVault = this.requireCurrentVault();
+    const indexMutations: IndexMutation[] = plan.backlinkEdits.map((edit) => ({
+      kind: 'upsert',
+      vaultId: sourceVault.id,
+      relativePath: edit.path,
+    }));
+    return this.withMetadata(activeFile, plan, indexMutations);
   }
 
   isPlanCurrent(plan: MigrationPlan, activeFile: TFile): boolean {
@@ -101,15 +130,28 @@ export class MigrationController {
     );
   }
 
-  async execute(plan: MigrationPlan): Promise<MigrationExecutionResult> {
+  async execute(plan: MigrationPlan): Promise<MigrationControllerExecutionResult> {
     const result = await executeMigrationPlan(plan, this.ioFactory());
-    await this.indexer.buildFullIndex(true);
-    return result;
+    try {
+      await this.indexer.applyMutations(plan.indexMutations ?? []);
+      return { ...result, indexUpdated: true };
+    } catch (error: unknown) {
+      return {
+        ...result,
+        indexUpdated: false,
+        indexError: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
-  private withFingerprint(activeFile: TFile, plan: MigrationPlan): MigrationPlan {
+  private withMetadata(
+    activeFile: TFile,
+    plan: MigrationPlan,
+    indexMutations: IndexMutation[],
+  ): MigrationPlan {
     return {
       ...plan,
+      indexMutations,
       fingerprint: createMigrationPlanFingerprint(
         activeFile.path,
         activeFile.stat?.mtime ?? 0,

@@ -101,7 +101,13 @@ export class RelinkBacklinksModal extends Modal {
           new MigrationReviewModal(this.app, plan, async () => {
             try {
               const result = await this.controller.execute(plan);
-              new Notice(`Relinked ${result.backlinksRewritten} backlink(s). The source note was left unchanged.`);
+              const indexWarning = result.indexUpdated
+                ? ''
+                : ` Migration succeeded, but the index update failed (${result.indexError}); run Refresh Index.`;
+              new Notice(
+                `Relinked ${result.backlinksRewritten} backlink(s). The source note was left unchanged.` +
+                indexWarning,
+              );
               this.close();
             } catch (error: unknown) {
               new Notice(`Relink failed: ${error instanceof Error ? error.message : String(error)}`);

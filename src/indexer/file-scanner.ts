@@ -19,6 +19,32 @@ export class FileScanner {
     this.globalExcludes = globalExcludes;
   }
 
+  public async scanFileAsync(vault: VaultConfig, relativePath: string): Promise<FileEntry | null> {
+    const normalized = relativePath.replace(/\\/g, '/');
+    if (
+      path.posix.isAbsolute(normalized) ||
+      normalized.split('/').includes('..') ||
+      !normalized.toLowerCase().endsWith('.md')
+    ) return null;
+    const root = path.resolve(vault.path);
+    const absolutePath = path.resolve(root, normalized.replace(/\//g, path.sep));
+    if (!absolutePath.startsWith(`${root}${path.sep}`)) return null;
+    try {
+      const stats = await fs.promises.stat(absolutePath);
+      if (!stats.isFile()) return null;
+      return {
+        absolutePath,
+        relativePath: normalized,
+        basename: path.basename(normalized, path.extname(normalized)),
+        extension: path.extname(normalized),
+        mtime: stats.mtimeMs,
+        size: stats.size,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   public async scanVaultAsync(vault: VaultConfig): Promise<FileEntry[]> {
     const files: FileEntry[] = [];
     const rootPath = vault.path;

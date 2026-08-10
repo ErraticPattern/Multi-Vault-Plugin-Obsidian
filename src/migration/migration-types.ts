@@ -1,4 +1,5 @@
 import type { IndexedNotePath } from './destination-paths';
+import type { IndexMutation } from '../indexer/index-mutations';
 
 export type MigrationMode = 'move' | 'copy' | 'relink';
 export type LinkKind = 'wikilink' | 'embed' | 'markdown';
@@ -63,6 +64,7 @@ export interface MigrationPlan {
   backlinksRewritten: number;
   skipped: SkippedLink[];
   fingerprint?: MigrationPlanFingerprint;
+  indexMutations?: IndexMutation[];
 }
 
 export interface MoveCopyPlanningInput {

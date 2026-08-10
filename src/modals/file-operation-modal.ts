@@ -122,9 +122,13 @@ export class FileOperationModal extends Modal {
           new MigrationReviewModal(this.app, plan, async () => {
             try {
               const result = await this.controller.execute(plan);
+              const indexWarning = result.indexUpdated
+                ? ''
+                : ` Migration succeeded, but the index update failed (${result.indexError}); run Refresh Index.`;
               new Notice(
                 `${result.mode === 'move' ? 'Moved' : 'Copied'} ${activeFile.name}; ` +
-                `${result.outgoingLinksRewritten} outgoing and ${result.backlinksRewritten} backlink(s) converted.`,
+                `${result.outgoingLinksRewritten} outgoing and ${result.backlinksRewritten} backlink(s) converted.` +
+                indexWarning,
               );
               this.close();
             } catch (error: unknown) {
