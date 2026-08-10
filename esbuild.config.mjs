@@ -12,12 +12,13 @@ if you want to view the source, please visit the github repository of this plugi
 `;
 
 const prod = (process.argv[2] === "production");
+const skipDeploy = process.env.MVN_SKIP_DEPLOY === "1";
 
 // Copy build output to local vault plugin folders listed in deploy-targets.json
 // (gitignored; see deploy-targets.example.json). Absent file = build only.
 const deployConfigFile = "deploy-targets.json";
 let deployTargets = [];
-if (fs.existsSync(deployConfigFile)) {
+if (!skipDeploy && fs.existsSync(deployConfigFile)) {
 	try {
 		const parsed = JSON.parse(fs.readFileSync(deployConfigFile, "utf8"));
 		if (Array.isArray(parsed) && parsed.every(t => typeof t === "string")) {
@@ -31,6 +32,10 @@ if (fs.existsSync(deployConfigFile)) {
 }
 
 function copyToTargets() {
+	if (skipDeploy) {
+		console.log("Skipping local deployment because MVN_SKIP_DEPLOY=1");
+		return;
+	}
 	for (const dir of deployTargets) {
 		try {
 			fs.mkdirSync(dir, { recursive: true });
