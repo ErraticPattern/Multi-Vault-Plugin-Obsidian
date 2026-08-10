@@ -130,11 +130,19 @@ Multi-Vault Navigator owns a versioned, read-only API:
 ```ts
 interface MultiVaultNavigatorApiV1 {
   version: 1;
+  listVaults(): VirtualVault[];
   listVirtualTargets(targetVaultIds: string[]): VirtualTarget[];
   resolveReference(vaultName: string, noteRef: string): ResolutionResult;
   formatWikilink(targetId: string, label?: string): string;
   openTarget(targetId: string): Promise<void>;
   onCatalogChanged(callback: () => void): () => void;
+}
+
+interface VirtualVault {
+  id: string;
+  name: string;
+  color?: string;
+  isCurrent: boolean;
 }
 
 interface VirtualTarget {
@@ -144,6 +152,7 @@ interface VirtualTarget {
   relativePath: string;
   basename: string;
   aliases: string[];
+  color?: string;
 }
 ```
 
@@ -252,7 +261,7 @@ Before full integration, an isolated branch or worktree validates:
 6. Clean fallback when either plugin is disabled.
 7. Current-note conversion through one editor transaction.
 
-The spike passes when catalog transfer is below 100 ms, external trie construction is below 2 s, and visible-range decoration remains responsive with the external catalog enabled.
+The spike passes when catalog transfer is below 100 ms, external trie construction is below 2 s, and the 95th-percentile decoration time for a 10,000-character visible range stays below 50 ms.
 
 ### Disposable Obsidian UI sandbox
 
