@@ -1,10 +1,10 @@
 {
-  "id": "multi-vault-navigator",
-  "name": "Multi-Vault Navigator",
-  "version": "2.5.1",
-  "minAppVersion": "1.12.7",
-  "description": "Navigate, search, and access recent files across multiple vaults.",
-  "author": "Hir43th",
-  "authorUrl": "",
-  "isDesktopOnly": true
+	"id": "multi-vault-navigator",
+	"name": "Multi-Vault Navigator",
+	"version": "2.5.2",
+	"minAppVersion": "1.12.7",
+	"description": "Navigate, search, and access recent files across multiple vaults.",
+	"author": "Hir43th",
+	"authorUrl": "",
+	"isDesktopOnly": true
 }
