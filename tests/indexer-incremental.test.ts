@@ -37,15 +37,26 @@ function entry(vaultId: string, relativePath: string, mtime = 2, size = 2): File
   };
 }
 
-function harness(initial: IndexedFile[]) {
+function harness(
+  initial: IndexedFile[],
+  scannedEntries: Array<{ vaultId: string; file: FileEntry }> = [],
+  scanDelayMs = 0,
+  failSave = false,
+) {
   const parsedPaths: string[] = [];
   let saves = 0;
+  let scanCalls = 0;
   const entries = new Map([
     ['ideas:Index.md', entry('ideas', 'Index.md')],
     ['medicine:Notes/Source.md', entry('medicine', 'Notes/Source.md')],
+    ...scannedEntries.map(({ vaultId, file }) => [`${vaultId}:${file.relativePath}`, file] as const),
   ]);
   const scanner = {
-    scanVaultAsync: async () => [],
+    scanVaultAsync: async (vault: VaultConfig) => {
+      scanCalls += 1;
+      if (scanDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, scanDelayMs));
+      return scannedEntries.filter((item) => item.vaultId === vault.id).map((item) => item.file);
+    },
     scanFileAsync: async (vault: VaultConfig, relativePath: string) =>
       entries.get(`${vault.id}:${relativePath}`) ?? null,
   };
@@ -57,7 +68,10 @@ function harness(initial: IndexedFile[]) {
   };
   const store = {
     loadIndex: async () => initial,
-    saveIndex: async () => { saves += 1; },
+    saveIndex: async () => {
+      saves += 1;
+      if (failSave) throw new Error('cache unavailable');
+    },
     clearIndex: async () => undefined,
   };
   const registry = {
@@ -69,7 +83,12 @@ function harness(initial: IndexedFile[]) {
     parser: parser as never,
     store: store as never,
   });
-  return { indexer, parsedPaths, get saves() { return saves; } };
+  return {
+    indexer,
+    parsedPaths,
+    get saves() { return saves; },
+    get scanCalls() { return scanCalls; },
+  };
 }
 
 describe('Indexer.applyMutations', () => {
@@ -92,5 +111,69 @@ describe('Indexer.applyMutations', () => {
     expect(test.indexer.getIndexedFiles().map((file) => file.id).sort()).toEqual([
       'ideas:Index.md', 'medicine:Notes/Source.md',
     ]);
+  });
+
+  it('does not publish in-memory mutations when cache persistence fails', async () => {
+    const original = indexed('ideas', 'Source.md');
+    const test = harness([original], [], 0, true);
+    await test.indexer.initialize();
+
+    await expect(test.indexer.applyMutations([
+      { kind: 'remove', vaultId: 'ideas', relativePath: 'Source.md' },
+    ])).rejects.toThrow('cache unavailable');
+
+    expect(test.indexer.getIndexedFiles()).toEqual([original]);
+  });
+});
+
+describe('Indexer.refreshIncremental', () => {
+  it('parses only new or mtime/size-changed files and removes missing entries', async () => {
+    const test = harness([
+      indexed('ideas', 'Stable.md', 10, 100),
+      indexed('ideas', 'Changed.md', 10, 100),
+      indexed('ideas', 'Removed.md', 10, 100),
+    ], [
+      { vaultId: 'ideas', file: entry('ideas', 'Stable.md', 10, 100) },
+      { vaultId: 'ideas', file: entry('ideas', 'Changed.md', 11, 100) },
+      { vaultId: 'medicine', file: entry('medicine', 'New.md', 1, 1) },
+    ]);
+    await test.indexer.initialize();
+
+    await test.indexer.refreshIncremental();
+
+    expect(test.parsedPaths).toEqual(['ideas:Changed.md', 'medicine:New.md']);
+    expect(test.indexer.getIndexedFiles().map((file) => file.id).sort()).toEqual([
+      'ideas:Changed.md', 'ideas:Stable.md', 'medicine:New.md',
+    ]);
+    expect(test.saves).toBe(1);
+  });
+
+  it('allows a new refresh after the previous refresh settles', async () => {
+    const test = harness([], [
+      { vaultId: 'ideas', file: entry('ideas', 'A.md') },
+    ]);
+    await test.indexer.initialize();
+
+    await test.indexer.refreshIncremental();
+    await test.indexer.refreshIncremental();
+
+    expect(test.scanCalls).toBe(4);
+  });
+
+  it('coalesces concurrent refresh callers', async () => {
+    const test = harness([], [
+      { vaultId: 'ideas', file: entry('ideas', 'A.md') },
+      { vaultId: 'medicine', file: entry('medicine', 'B.md') },
+    ], 10);
+    await test.indexer.initialize();
+
+    await Promise.all([
+      test.indexer.refreshIncremental(),
+      test.indexer.refreshIncremental(),
+      test.indexer.refreshIncremental(),
+    ]);
+
+    expect(test.scanCalls).toBe(2);
+    expect(test.saves).toBe(1);
   });
 });

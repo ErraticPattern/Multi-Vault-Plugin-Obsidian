@@ -272,7 +272,7 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
 
   private async refreshIndexInBackground(): Promise<void> {
     try {
-      await this.indexer.buildFullIndex(false);
+      await this.indexer.refreshIncremental(false);
       this.refreshSearchEngine();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
