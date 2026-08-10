@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { collectSourceVaultSnapshot } from '../src/migration/obsidian-snapshot';
+import { collectMigrationSnapshot } from '../src/migration/obsidian-snapshot';
 import {
   planMoveOrCopy,
   planStandaloneRelink,
@@ -136,7 +136,7 @@ describe('planMoveOrCopy move', () => {
   });
 });
 
-describe('collectSourceVaultSnapshot', () => {
+describe('collectMigrationSnapshot', () => {
   it('collects exact wikilink, Markdown-link, and embed references with resolutions', async () => {
     const content = 'Wiki [[EEG]] markdown [EEG](EEG.md) embed ![[plot.png]].';
     const wikiStart = content.indexOf('[[EEG]]');
@@ -166,16 +166,17 @@ describe('collectSourceVaultSnapshot', () => {
     };
     const app = {
       vault: {
-        getMarkdownFiles: () => [file],
+        getFileByPath: (filePath: string) => filePath === file.path ? file : null,
         read: async () => content,
       },
       metadataCache: {
+        resolvedLinks: {},
         getFileCache: () => cache,
         getFirstLinkpathDest: (targetPath: string) => targetPath === 'plot.png' ? image : target,
       },
     };
 
-    const snapshot = await collectSourceVaultSnapshot(app as never);
+    const snapshot = await collectMigrationSnapshot(app as never, file.path);
 
     expect(snapshot).toEqual([note('Notes/Source.md', content, [
       link(content, '[[EEG]]', 'EEG', 'Notes/EEG.md'),

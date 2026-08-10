@@ -2,6 +2,7 @@ import { App, Modal, Notice, Setting } from 'obsidian';
 import type { Indexer } from '../indexer/indexer';
 import type { MigrationController } from '../migration/migration-controller';
 import { makeRelinkPreviewModel } from '../migration/migration-view-models';
+import { PreparedPlanCache } from '../migration/prepared-plan-cache';
 import type { IndexedFile } from '../types';
 import type { VaultRegistry } from '../vault-registry';
 import { MigrationReviewModal } from './migration-review-modal';
@@ -13,6 +14,7 @@ export class RelinkBacklinksModal extends Modal {
   private targetNoteDescription: HTMLElement | null = null;
   private previewEl: HTMLElement | null = null;
   private previewGeneration = 0;
+  private readonly preparedPlans = new PreparedPlanCache();
 
   constructor(
     app: App,
@@ -49,6 +51,7 @@ export class RelinkBacklinksModal extends Modal {
       dropdown.setValue(this.targetVaultId).onChange((value) => {
         this.targetVaultId = value;
         this.targetNote = null;
+        this.preparedPlans.invalidate();
         this.updateTargetDescription();
         void this.refreshPreview(activeFile);
       });
@@ -64,6 +67,7 @@ export class RelinkBacklinksModal extends Modal {
           this.targetVaultId,
           (file) => {
             this.targetNote = file;
+            this.preparedPlans.invalidate();
             this.updateTargetDescription();
             void this.refreshPreview(activeFile);
           },
@@ -71,6 +75,7 @@ export class RelinkBacklinksModal extends Modal {
       }))
       .addButton((button) => button.setButtonText('Use note name').onClick(() => {
         this.targetNote = null;
+        this.preparedPlans.invalidate();
         this.updateTargetDescription();
         void this.refreshPreview(activeFile);
       }));
@@ -84,10 +89,14 @@ export class RelinkBacklinksModal extends Modal {
       .setCta()
       .onClick(async () => {
         try {
-          const plan = await this.controller.planRelink(
-            activeFile,
-            this.targetVaultId,
-            this.targetNote ?? undefined,
+          const plan = await this.preparedPlans.getOrPrepare(
+            this.planKey(),
+            (prepared) => this.controller.isPlanCurrent(prepared, activeFile),
+            () => this.controller.planRelink(
+              activeFile,
+              this.targetVaultId,
+              this.targetNote ?? undefined,
+            ),
           );
           new MigrationReviewModal(this.app, plan, async () => {
             try {
@@ -118,10 +127,14 @@ export class RelinkBacklinksModal extends Modal {
     this.previewEl.createEl('h3', { text: 'Backlink preview' });
     this.previewEl.createEl('p', { text: 'Scanning current-vault backlinks…' });
     try {
-      const plan = await this.controller.planRelink(
-        activeFile,
-        this.targetVaultId,
-        this.targetNote ?? undefined,
+      const plan = await this.preparedPlans.getOrPrepare(
+        this.planKey(),
+        (prepared) => this.controller.isPlanCurrent(prepared, activeFile),
+        () => this.controller.planRelink(
+          activeFile,
+          this.targetVaultId,
+          this.targetNote ?? undefined,
+        ),
       );
       if (generation !== this.previewGeneration || !this.previewEl) return;
       const preview = makeRelinkPreviewModel(plan);
@@ -156,11 +169,16 @@ export class RelinkBacklinksModal extends Modal {
     }
   }
 
+  private planKey(): string {
+    return `${this.targetVaultId}:${this.targetNote?.relativePath ?? ''}`;
+  }
+
   private targetVaultName(): string {
     return this.vaultRegistry.getVaultById(this.targetVaultId)?.name ?? this.targetVaultId;
   }
 
   onClose(): void {
+    this.preparedPlans.invalidate();
     this.contentEl.empty();
   }
 }

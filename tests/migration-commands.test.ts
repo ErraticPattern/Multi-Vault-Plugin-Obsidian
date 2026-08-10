@@ -176,9 +176,14 @@ describe('MigrationController', () => {
     const app = {
       vault: {
         getMarkdownFiles: () => files,
+        getFileByPath: (filePath: string) => files.find((file) => file.path === filePath) ?? null,
         read: async (file: TFile) => contents.get(file.path)!,
       },
       metadataCache: {
+        resolvedLinks: {
+          [source.path]: { [eeg.path]: 1 },
+          [index.path]: { [source.path]: 1 },
+        },
         getFileCache: (file: TFile) => caches.get(file.path) ?? {},
         getFirstLinkpathDest: (link: string) => link === 'EEG' ? eeg : source,
       },

@@ -26,22 +26,34 @@ function classifyLink(reference: Reference): LinkKind {
   return reference.original.startsWith('[[') ? 'wikilink' : 'markdown';
 }
 
-export async function collectSourceVaultSnapshot(app: App): Promise<NoteSnapshot[]> {
+async function snapshotNote(app: App, file: TFile): Promise<NoteSnapshot> {
+  const content = await app.vault.read(file);
+  const cache = app.metadataCache.getFileCache(file);
+  const links = (cache?.links ?? []).map((reference) =>
+    snapshotReference(app, file, content, reference, classifyLink(reference)));
+  const embeds = (cache?.embeds ?? []).map((reference) =>
+    snapshotReference(app, file, content, reference, 'embed'));
+  return {
+    path: file.path,
+    basename: file.basename,
+    content,
+    links: [...links, ...embeds]
+      .sort((left, right) => left.startOffset - right.startOffset),
+  };
+}
+
+export async function collectMigrationSnapshot(
+  app: App,
+  sourcePath: string,
+): Promise<NoteSnapshot[]> {
+  const paths = new Set([sourcePath]);
+  for (const [candidatePath, destinations] of Object.entries(app.metadataCache.resolvedLinks)) {
+    if ((destinations[sourcePath] ?? 0) > 0) paths.add(candidatePath);
+  }
   const notes: NoteSnapshot[] = [];
-  for (const file of app.vault.getMarkdownFiles()) {
-    const content = await app.vault.read(file);
-    const cache = app.metadataCache.getFileCache(file);
-    const links = (cache?.links ?? []).map((reference) =>
-      snapshotReference(app, file, content, reference, classifyLink(reference)));
-    const embeds = (cache?.embeds ?? []).map((reference) =>
-      snapshotReference(app, file, content, reference, 'embed'));
-    notes.push({
-      path: file.path,
-      basename: file.basename,
-      content,
-      links: [...links, ...embeds]
-        .sort((left, right) => left.startOffset - right.startOffset),
-    });
+  for (const filePath of [...paths].sort()) {
+    const file = app.vault.getFileByPath(filePath);
+    if (file) notes.push(await snapshotNote(app, file));
   }
   return notes;
 }

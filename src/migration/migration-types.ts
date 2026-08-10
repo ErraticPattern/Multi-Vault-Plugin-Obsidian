@@ -46,6 +46,11 @@ export interface PlannedFileEdit {
   rewrites?: LinkRewritePreview[];
 }
 
+export interface MigrationPlanFingerprint {
+  sourceMtime: number;
+  backlinks: Array<[sourcePath: string, count: number]>;
+}
+
 export interface MigrationPlan {
   mode: MigrationMode;
   sourcePath: string;
@@ -57,6 +62,7 @@ export interface MigrationPlan {
   outgoingLinksRewritten: number;
   backlinksRewritten: number;
   skipped: SkippedLink[];
+  fingerprint?: MigrationPlanFingerprint;
 }
 
 export interface MoveCopyPlanningInput {

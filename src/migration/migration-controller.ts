@@ -3,12 +3,16 @@ import type { Indexer } from '../indexer/indexer';
 import type { VaultRegistry } from '../vault-registry';
 import type { IndexedFile, VaultConfig } from '../types';
 import { resolveDestinationPath } from './destination-paths';
-import { collectSourceVaultSnapshot } from './obsidian-snapshot';
+import { collectMigrationSnapshot } from './obsidian-snapshot';
 import { planMoveOrCopy, planStandaloneRelink } from './migration-planner';
 import type { MigrationPlan } from './migration-types';
 import { executeMigrationPlan, type MigrationExecutionResult, type MigrationIo } from './migration-transaction';
 import { ObsidianMigrationIo } from './obsidian-migration-io';
 import { isMarkdownExtension } from './migration-view-models';
+import {
+  createMigrationPlanFingerprint,
+  isMigrationPlanFingerprintCurrent,
+} from './prepared-plan-cache';
 
 export type MigrationIoFactory = () => MigrationIo;
 
@@ -46,8 +50,8 @@ export class MigrationController {
     const sourceVault = this.requireCurrentVault();
     const targetVault = this.requireVault(targetVaultId);
     const destination = resolveDestinationPath(targetVault.path, targetFolder, activeFile.name);
-    const notes = await collectSourceVaultSnapshot(this.app);
-    return planMoveOrCopy({
+    const notes = await collectMigrationSnapshot(this.app, activeFile.path);
+    const plan = planMoveOrCopy({
       mode,
       sourcePath: activeFile.path,
       sourceVaultName: sourceVault.name,
@@ -59,6 +63,7 @@ export class MigrationController {
       targetIndexedFiles: this.indexedMarkdownFiles(targetVault.id),
       preserveLinks,
     });
+    return this.withFingerprint(activeFile, plan);
   }
 
   async planRelink(
@@ -76,20 +81,41 @@ export class MigrationController {
       targetIndexedFiles,
       targetNote,
     );
-    const notes = await collectSourceVaultSnapshot(this.app);
-    return planStandaloneRelink({
+    const notes = await collectMigrationSnapshot(this.app, activeFile.path);
+    const plan = planStandaloneRelink({
       sourcePath: activeFile.path,
       targetVaultName: targetVault.name,
       targetRelativePath,
       notes,
       targetIndexedFiles,
     });
+    return this.withFingerprint(activeFile, plan);
+  }
+
+  isPlanCurrent(plan: MigrationPlan, activeFile: TFile): boolean {
+    return Boolean(plan.fingerprint) && isMigrationPlanFingerprintCurrent(
+      plan.fingerprint!,
+      activeFile.path,
+      activeFile.stat?.mtime ?? 0,
+      this.app.metadataCache.resolvedLinks,
+    );
   }
 
   async execute(plan: MigrationPlan): Promise<MigrationExecutionResult> {
     const result = await executeMigrationPlan(plan, this.ioFactory());
     await this.indexer.buildFullIndex(true);
     return result;
+  }
+
+  private withFingerprint(activeFile: TFile, plan: MigrationPlan): MigrationPlan {
+    return {
+      ...plan,
+      fingerprint: createMigrationPlanFingerprint(
+        activeFile.path,
+        activeFile.stat?.mtime ?? 0,
+        this.app.metadataCache.resolvedLinks,
+      ),
+    };
   }
 
   private indexedMarkdownFiles(vaultId: string): IndexedFile[] {
