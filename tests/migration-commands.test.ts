@@ -5,14 +5,19 @@ import {
   RELINK_BACKLINKS_COMMAND_ID,
   registerMigrationCommands,
 } from '../src/migration/migration-commands';
-import { MigrationController } from '../src/migration/migration-controller';
+import {
+  MigrationController,
+  resolveRelinkTargetRelativePath,
+} from '../src/migration/migration-controller';
 import type { MigrationIo } from '../src/migration/migration-transaction';
 import {
   getFolderSuggestions,
   getTargetNoteSuggestions,
   makeMigrationReviewModel,
+  makeRelinkPreviewModel,
 } from '../src/migration/migration-view-models';
 import type { IndexedFile, VaultConfig } from '../src/types';
+import { formatCrossVaultWikilink } from '../src/migration/cross-vault-link';
 
 function testFile(filePath: string): TFile {
   const file = new TFile();
@@ -38,6 +43,12 @@ class ControllerIo implements MigrationIo {
   async trashSourceFile(path: string) { this.source.delete(path); }
   async restoreSourceFile(path: string, content: string) { this.source.set(path, content); }
 }
+
+describe('cross-vault clipboard links', () => {
+  it('formats the selected vault and current note as a natural cross-vault wikilink', () => {
+    expect(formatCrossVaultWikilink('medicine', 'ZeroTier')).toBe('[[medicine::ZeroTier]]');
+  });
+});
 
 describe('migration command registration', () => {
   it('registers move/copy and standalone relink commands with their modal factories', () => {
@@ -65,12 +76,30 @@ describe('migration picker and review view models', () => {
       '/', 'Notes', 'Notes/Networks',
     ]);
     const files = [
-      { vaultId: 'math', extension: 'md', relativePath: 'Notes/Zerotier.md', basename: 'Zerotier' },
+      { vaultId: 'math', extension: '.md', relativePath: 'Notes/Zerotier.md', basename: 'Zerotier' },
       { vaultId: 'math', extension: 'png', relativePath: 'image.png', basename: 'image' },
       { vaultId: 'ideas', extension: 'md', relativePath: 'Other.md', basename: 'Other' },
     ] as IndexedFile[];
     expect(getTargetNoteSuggestions(files, 'math').map(({ relativePath }) => relativePath))
       .toEqual(['Notes/Zerotier.md']);
+  });
+
+  it('allows an optional relink target when the note name is unambiguous', () => {
+    const targetFiles = [
+      { vaultId: 'medicine', extension: '.md', relativePath: 'Notes/ZeroTier.md', basename: 'ZeroTier' },
+    ] as IndexedFile[];
+    expect(resolveRelinkTargetRelativePath('ZeroTier', targetFiles)).toBe('Notes/ZeroTier.md');
+    expect(resolveRelinkTargetRelativePath('Missing', targetFiles)).toBe('Missing.md');
+    expect(resolveRelinkTargetRelativePath('ZeroTier', targetFiles, targetFiles[0]))
+      .toBe('Notes/ZeroTier.md');
+  });
+
+  it('requires explicit selection only when duplicate target names are ambiguous', () => {
+    const targetFiles = [
+      { vaultId: 'medicine', extension: '.md', relativePath: 'Notes/ZeroTier.md', basename: 'ZeroTier' },
+      { vaultId: 'medicine', extension: '.md', relativePath: 'Archive/ZeroTier.md', basename: 'ZeroTier' },
+    ] as IndexedFile[];
+    expect(() => resolveRelinkTargetRelativePath('ZeroTier', targetFiles)).toThrow(/multiple/i);
   });
 
   it('summarizes destination, rewrites, affected files, and skipped reasons', () => {
@@ -96,6 +125,29 @@ describe('migration picker and review view models', () => {
       backlinks: 3,
       affectedFiles: 2,
       skippedByReason: { embed: 1, unresolved: 2 },
+    });
+  });
+
+  it('previews backlink counts and exact source-to-destination link conversions', () => {
+    const plan = {
+      mode: 'relink', sourcePath: 'ZeroTier.md', sourceOriginalContent: 'source',
+      destinationAbsolutePath: null, destinationRelativePath: null, destinationContent: null,
+      backlinkEdits: [{
+        path: 'Index.md', originalContent: 'See [[ZeroTier]].',
+        updatedContent: 'See [[medicine::ZeroTier]].', rewrittenLinks: 1,
+        rewrites: [{ before: '[[ZeroTier]]', after: '[[medicine::ZeroTier]]' }],
+      }],
+      outgoingLinksRewritten: 0, backlinksRewritten: 1, skipped: [],
+    } as never;
+
+    expect(makeRelinkPreviewModel(plan)).toEqual({
+      backlinks: 1,
+      affectedFiles: 1,
+      examples: [{
+        sourcePath: 'Index.md',
+        before: '[[ZeroTier]]',
+        after: '[[medicine::ZeroTier]]',
+      }],
     });
   });
 });
@@ -140,7 +192,7 @@ describe('MigrationController', () => {
       getIndexedFiles: () => files.map((file) => ({
         id: file.path, vaultId: 'ideas', vaultName: 'ideas',
         absolutePath: `C:/vaults/ideas/${file.path}`, relativePath: file.path,
-        basename: file.basename, extension: 'md', mtime: 0, size: 0,
+        basename: file.basename, extension: '.md', mtime: 0, size: 0,
       })),
       buildFullIndex: async () => { refreshes += 1; },
     };

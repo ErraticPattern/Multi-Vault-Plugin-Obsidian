@@ -117,6 +117,7 @@ function planBacklinks(
   for (const note of notes) {
     if (note.path === sourcePath) continue;
     const edits: TextEdit[] = [];
+    const rewrites: Array<{ before: string; after: string }> = [];
     for (const reference of note.links) {
       if (reference.resolvedPath !== sourcePath) continue;
       if (reference.kind === 'embed') {
@@ -137,6 +138,7 @@ function planBacklinks(
         continue;
       }
       edits.push(makeEdit(reference, replacement));
+      rewrites.push({ before: reference.original, after: replacement });
     }
     if (edits.length === 0) continue;
     planned.push({
@@ -144,6 +146,7 @@ function planBacklinks(
       originalContent: note.content,
       updatedContent: applyTextEdits(note.content, edits),
       rewrittenLinks: edits.length,
+      rewrites,
     });
     count += edits.length;
   }

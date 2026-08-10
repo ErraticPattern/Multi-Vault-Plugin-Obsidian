@@ -18,10 +18,33 @@ export function getFolderSuggestions(folders: string[]): string[] {
   });
 }
 
+export function isMarkdownExtension(extension: string): boolean {
+  return extension.replace(/^\./, '').toLowerCase() === 'md';
+}
+
 export function getTargetNoteSuggestions(files: IndexedFile[], vaultId: string): IndexedFile[] {
   return files
-    .filter((file) => file.vaultId === vaultId && file.extension.toLowerCase() === 'md')
+    .filter((file) => file.vaultId === vaultId && isMarkdownExtension(file.extension))
     .sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+}
+
+export interface RelinkPreviewModel {
+  backlinks: number;
+  affectedFiles: number;
+  examples: Array<{ sourcePath: string; before: string; after: string }>;
+}
+
+export function makeRelinkPreviewModel(plan: MigrationPlan): RelinkPreviewModel {
+  return {
+    backlinks: plan.backlinksRewritten,
+    affectedFiles: plan.backlinkEdits.length,
+    examples: plan.backlinkEdits.flatMap((edit) =>
+      (edit.rewrites ?? []).map((rewrite) => ({
+        sourcePath: edit.path,
+        before: rewrite.before,
+        after: rewrite.after,
+      }))),
+  };
 }
 
 export function makeMigrationReviewModel(plan: MigrationPlan): MigrationReviewModel {

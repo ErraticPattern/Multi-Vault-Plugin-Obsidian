@@ -11,6 +11,7 @@ import { SwitchVaultModal } from './modals/switch-vault-modal';
 import { RecentFilesModal } from './modals/recent-files-modal';
 import { FileOperationModal } from './modals/file-operation-modal';
 import { RelinkBacklinksModal } from './modals/relink-backlinks-modal';
+import { CrossVaultLinkModal } from './modals/cross-vault-link-modal';
 import { DuplicateDetectorModal } from './modals/duplicate-detector-modal';
 import { VIEW_TYPE_EXTERNAL_FILE, ExternalFileView } from './views/external-file-view';
 import { VIEW_TYPE_SEARCH_PAGE, SearchPageView } from './views/search-page-view';
@@ -172,16 +173,13 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
     this.addCommand({
       id: 'multi-vault-copy-link',
       name: 'Copy Cross-Vault Link for Current File',
-      callback: async () => {
-         const activeFile = this.app.workspace.getActiveFile();
-         if (!activeFile) {
-            new Notice("No active file");
-            return;
-         }
-         const vaultId = this.vaultRegistry.getCurrentVaultId();
-         const link = `[${activeFile.basename}](obsidian://mvn-open?vaultId=${vaultId}&file=${encodeURIComponent(activeFile.path)})`;
-         await navigator.clipboard.writeText(link);
-         new Notice("Cross-vault link copied to clipboard!");
+      callback: () => {
+        const activeFile = this.app.workspace.getActiveFile();
+        if (!activeFile) {
+          new Notice('No active file');
+          return;
+        }
+        new CrossVaultLinkModal(this.app, activeFile, this.vaultRegistry).open();
       }
     });
 

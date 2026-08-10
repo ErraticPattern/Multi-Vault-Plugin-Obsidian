@@ -61,7 +61,7 @@ export class FileOperationModal extends Modal {
     });
 
     const folderSetting = new Setting(this.contentEl)
-      .setName('Destination folder')
+      .setName('Destination folder (optional)')
       .setDesc('/ (vault root)')
       .addButton((button) => button.setButtonText('Choose folder').onClick(() => {
         const vault = this.vaultRegistry.getVaultById(this.targetVaultId);
@@ -81,6 +81,10 @@ export class FileOperationModal extends Modal {
         } catch (error: unknown) {
           new Notice(`Could not list target folders: ${error instanceof Error ? error.message : String(error)}`);
         }
+      }))
+      .addButton((button) => button.setButtonText('Use vault root').onClick(() => {
+        this.targetFolder = '/';
+        this.updateFolderDescription();
       }));
     this.folderDescription = folderSetting.descEl;
 

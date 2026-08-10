@@ -1,6 +1,7 @@
 import { App, Modal, Notice, Setting } from 'obsidian';
 import type { Indexer } from '../indexer/indexer';
 import type { MigrationController } from '../migration/migration-controller';
+import { makeRelinkPreviewModel } from '../migration/migration-view-models';
 import type { IndexedFile } from '../types';
 import type { VaultRegistry } from '../vault-registry';
 import { MigrationReviewModal } from './migration-review-modal';
@@ -10,6 +11,8 @@ export class RelinkBacklinksModal extends Modal {
   private targetVaultId = '';
   private targetNote: IndexedFile | null = null;
   private targetNoteDescription: HTMLElement | null = null;
+  private previewEl: HTMLElement | null = null;
+  private previewGeneration = 0;
 
   constructor(
     app: App,
@@ -47,12 +50,13 @@ export class RelinkBacklinksModal extends Modal {
         this.targetVaultId = value;
         this.targetNote = null;
         this.updateTargetDescription();
+        void this.refreshPreview(activeFile);
       });
     });
 
     const noteSetting = new Setting(this.contentEl)
-      .setName('Existing destination note')
-      .setDesc('No note selected')
+      .setName('Existing destination note (optional)')
+      .setDesc('Using the current note name in the target vault')
       .addButton((button) => button.setButtonText('Choose note').onClick(() => {
         new TargetNoteSuggestModal(
           this.app,
@@ -61,21 +65,30 @@ export class RelinkBacklinksModal extends Modal {
           (file) => {
             this.targetNote = file;
             this.updateTargetDescription();
+            void this.refreshPreview(activeFile);
           },
         ).open();
+      }))
+      .addButton((button) => button.setButtonText('Use note name').onClick(() => {
+        this.targetNote = null;
+        this.updateTargetDescription();
+        void this.refreshPreview(activeFile);
       }));
     this.targetNoteDescription = noteSetting.descEl;
+
+    this.previewEl = this.contentEl.createDiv({ cls: 'mvn-relink-preview' });
+    void this.refreshPreview(activeFile);
 
     new Setting(this.contentEl).addButton((button) => button
       .setButtonText('Review changes')
       .setCta()
       .onClick(async () => {
-        if (!this.targetNote) {
-          new Notice('Choose an existing destination note first.');
-          return;
-        }
         try {
-          const plan = await this.controller.planRelink(activeFile, this.targetVaultId, this.targetNote);
+          const plan = await this.controller.planRelink(
+            activeFile,
+            this.targetVaultId,
+            this.targetNote ?? undefined,
+          );
           new MigrationReviewModal(this.app, plan, async () => {
             try {
               const result = await this.controller.execute(plan);
@@ -93,7 +106,58 @@ export class RelinkBacklinksModal extends Modal {
   }
 
   private updateTargetDescription(): void {
-    this.targetNoteDescription?.setText(this.targetNote?.relativePath ?? 'No note selected');
+    this.targetNoteDescription?.setText(
+      this.targetNote?.relativePath ?? 'Using the current note name in the target vault',
+    );
+  }
+
+  private async refreshPreview(activeFile: import('obsidian').TFile): Promise<void> {
+    if (!this.previewEl) return;
+    const generation = ++this.previewGeneration;
+    this.previewEl.empty();
+    this.previewEl.createEl('h3', { text: 'Backlink preview' });
+    this.previewEl.createEl('p', { text: 'Scanning current-vault backlinks…' });
+    try {
+      const plan = await this.controller.planRelink(
+        activeFile,
+        this.targetVaultId,
+        this.targetNote ?? undefined,
+      );
+      if (generation !== this.previewGeneration || !this.previewEl) return;
+      const preview = makeRelinkPreviewModel(plan);
+      this.previewEl.empty();
+      this.previewEl.createEl('h3', { text: 'Backlink preview' });
+      this.previewEl.createEl('p', {
+        text: `Source vault: ${preview.backlinks} backlink(s) in ${preview.affectedFiles} note(s) will change.`,
+      });
+      const destination = preview.examples[0]?.after ?? `[[${this.targetVaultName()}::${activeFile.basename}]]`;
+      this.previewEl.createEl('p', {
+        text: `Destination vault format: ${destination}`,
+      });
+      if (preview.examples.length > 0) {
+        const list = this.previewEl.createEl('ul', { cls: 'mvn-relink-preview-examples' });
+        for (const example of preview.examples.slice(0, 10)) {
+          list.createEl('li', {
+            text: `${example.sourcePath}: ${example.before} → ${example.after}`,
+          });
+        }
+        if (preview.examples.length > 10) {
+          list.createEl('li', { text: `…and ${preview.examples.length - 10} more` });
+        }
+      }
+    } catch (error: unknown) {
+      if (generation !== this.previewGeneration || !this.previewEl) return;
+      this.previewEl.empty();
+      this.previewEl.createEl('h3', { text: 'Backlink preview' });
+      this.previewEl.createEl('p', {
+        text: error instanceof Error ? error.message : String(error),
+        cls: 'mod-warning',
+      });
+    }
+  }
+
+  private targetVaultName(): string {
+    return this.vaultRegistry.getVaultById(this.targetVaultId)?.name ?? this.targetVaultId;
   }
 
   onClose(): void {

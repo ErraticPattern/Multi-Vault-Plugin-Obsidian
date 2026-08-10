@@ -34,7 +34,7 @@ Natively, Obsidian does not allow you to open a note from outside the active vau
 - Includes actions to quickly "Open in Source Vault" or "Copy Cross-Vault Link."
 
 ### 3. Natural Cross-Vault Links
-Write `[[VaultName::NoteTitle]]` in any note. The plugin parses these references and allows you to click them to instantly open the cross-vault note in the read-only preview.
+Write `[[VaultName::NoteTitle]]` in any note. The plugin parses these references and allows you to click them to instantly open the cross-vault note in the read-only preview. **Copy Cross-Vault Link for Current File** opens a vault chooser and copies this natural wikilink format instead of a protocol URL.
 
 ### 4. Recent Files & Quick Switch
 - **Recent Files**: See the 50 most recently modified files across *all* your vaults.
@@ -46,7 +46,7 @@ Move or copy a note into any existing folder in another vault. The Smart Inbox R
 Before execution, the plugin previews every link change. Move converts links inside the destination note back to notes remaining in the source vault and redirects source-vault backlinks to the moved note. Copy converts only outgoing links because the original remains available. Aliases, headings, and block references are preserved.
 
 ### 6. Standalone Backlink Relinking
-Use **Relink Backlinks to Existing Cross-Vault Note** when the destination note already exists. Select that note in another vault, review affected backlinks, and redirect them without moving, editing, or deleting the current duplicate.
+Use **Relink Backlinks to Existing Cross-Vault Note** when the destination note already exists. Selecting that note is optional: when omitted, the plugin uses the current note name in the chosen vault. The pane previews the backlink count and exact `[[Note]]` to `[[vault::Note]]` conversions before review. The current duplicate is never moved, edited, or deleted.
 
 ### 7. Duplicate Note Detector
 Scan all your connected vaults to find notes with the exact same name, helping you merge scattered information.
@@ -86,7 +86,7 @@ Go to **Settings > Multi-Vault Navigator** to configure:
 
 The Move/Copy review reports the selected destination path, outgoing links, backlinks, affected source files, and skipped references. Existing cross-vault links, embeds, attachments, unresolved links, self-links, and Markdown-style links are left unchanged and reported rather than guessed.
 
-Destination files are never overwritten. Migration aborts if an affected source note changes after review. If writing a destination, updating backlinks, or trashing the source fails, completed edits are rolled back from originals held in memory; no backup files are created.
+The destination folder is optional and defaults to the target vault root. Destination files are never overwritten. Migration aborts if an affected source note changes after review. If writing a destination, updating backlinks, or trashing the source fails, completed edits are rolled back from originals held in memory; no backup files are created.
 
 Cross-vault references use the shortest safe target. A unique note becomes `[[vault::Note]]`; duplicate basenames use an extensionless path such as `[[vault::Folder/Note]]`.
 

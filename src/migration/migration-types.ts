@@ -33,11 +33,17 @@ export interface SkippedLink {
   reason: SkippedLinkReason;
 }
 
+export interface LinkRewritePreview {
+  before: string;
+  after: string;
+}
+
 export interface PlannedFileEdit {
   path: string;
   originalContent: string;
   updatedContent: string;
   rewrittenLinks: number;
+  rewrites?: LinkRewritePreview[];
 }
 
 export interface MigrationPlan {

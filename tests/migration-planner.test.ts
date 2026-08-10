@@ -92,6 +92,10 @@ describe('planMoveOrCopy move', () => {
       originalContent: backlinkContent,
       updatedContent: 'See [[mathematics::Zerotier|ZeroTier]].',
       rewrittenLinks: 1,
+      rewrites: [{
+        before: '[[Zerotier|ZeroTier]]',
+        after: '[[mathematics::Zerotier|ZeroTier]]',
+      }],
     }]);
     expect(plan.outgoingLinksRewritten).toBe(1);
     expect(plan.backlinksRewritten).toBe(1);

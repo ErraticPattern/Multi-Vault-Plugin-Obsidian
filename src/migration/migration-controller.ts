@@ -8,8 +8,25 @@ import { planMoveOrCopy, planStandaloneRelink } from './migration-planner';
 import type { MigrationPlan } from './migration-types';
 import { executeMigrationPlan, type MigrationExecutionResult, type MigrationIo } from './migration-transaction';
 import { ObsidianMigrationIo } from './obsidian-migration-io';
+import { isMarkdownExtension } from './migration-view-models';
 
 export type MigrationIoFactory = () => MigrationIo;
+
+export function resolveRelinkTargetRelativePath(
+  sourceBasename: string,
+  targetFiles: IndexedFile[],
+  selectedTarget?: IndexedFile,
+): string {
+  if (selectedTarget) return selectedTarget.relativePath;
+  const matches = targetFiles.filter((file) =>
+    isMarkdownExtension(file.extension) &&
+    file.basename.toLowerCase() === sourceBasename.toLowerCase());
+  if (matches.length === 1) return matches[0].relativePath;
+  if (matches.length > 1) {
+    throw new Error(`Multiple destination notes named "${sourceBasename}" exist; choose one explicitly.`);
+  }
+  return `${sourceBasename}.md`;
+}
 
 export class MigrationController {
   constructor(
@@ -47,19 +64,25 @@ export class MigrationController {
   async planRelink(
     activeFile: TFile,
     targetVaultId: string,
-    targetNote: IndexedFile,
+    targetNote?: IndexedFile,
   ): Promise<MigrationPlan> {
     const targetVault = this.requireVault(targetVaultId);
-    if (targetNote.vaultId !== targetVault.id || targetNote.extension.toLowerCase() !== 'md') {
+    if (targetNote && (targetNote.vaultId !== targetVault.id || !isMarkdownExtension(targetNote.extension))) {
       throw new Error('Selected target note is not a Markdown note in the target vault');
     }
+    const targetIndexedFiles = this.indexedMarkdownFiles(targetVault.id);
+    const targetRelativePath = resolveRelinkTargetRelativePath(
+      activeFile.basename,
+      targetIndexedFiles,
+      targetNote,
+    );
     const notes = await collectSourceVaultSnapshot(this.app);
     return planStandaloneRelink({
       sourcePath: activeFile.path,
       targetVaultName: targetVault.name,
-      targetRelativePath: targetNote.relativePath,
+      targetRelativePath,
       notes,
-      targetIndexedFiles: this.indexedMarkdownFiles(targetVault.id),
+      targetIndexedFiles,
     });
   }
 
@@ -71,7 +94,7 @@ export class MigrationController {
 
   private indexedMarkdownFiles(vaultId: string): IndexedFile[] {
     return this.indexer.getIndexedFiles().filter((file) =>
-      file.vaultId === vaultId && file.extension.toLowerCase() === 'md');
+      file.vaultId === vaultId && isMarkdownExtension(file.extension));
   }
 
   private requireCurrentVault(): VaultConfig {

@@ -731,7 +731,25 @@ button.mvn-btn-small:hover {
 
 .mvn-migration-paths,
 .mvn-migration-skipped,
-.mvn-migration-summary {
+.mvn-migration-summary,
+.mvn-relink-preview-examples {
   max-height: 12rem;
   overflow: auto;
+}
+
+.mvn-relink-preview,
+.mvn-cross-vault-link-preview {
+  margin: var(--size-4-3) 0;
+  padding: var(--size-4-3);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+}
+
+.mvn-relink-preview p {
+  margin: var(--size-4-1) 0;
+}
+
+.mvn-cross-vault-link-preview code {
+  user-select: text;
 }
