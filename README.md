@@ -40,10 +40,15 @@ Write `[[VaultName::NoteTitle]]` in any note. The plugin parses these references
 - **Recent Files**: See the 50 most recently modified files across *all* your vaults.
 - **Switch Vault**: Instantly launch your other vaults without going through the native Obsidian Vault Manager.
 
-### 5. Smart Inbox Router (Move/Copy)
-Easily move or copy a note from your current vault to another vault. The plugin includes a Smart Inbox Router that suggests the most relevant destination vault based on the tags present in your note.
+### 5. Safe Cross-Vault Move/Copy
+Move or copy a note into any existing folder in another vault. The Smart Inbox Router still suggests a destination vault from the note's tags, while a searchable folder picker controls the final location.
 
-### 6. Duplicate Note Detector
+Before execution, the plugin previews every link change. Move converts links inside the destination note back to notes remaining in the source vault and redirects source-vault backlinks to the moved note. Copy converts only outgoing links because the original remains available. Aliases, headings, and block references are preserved.
+
+### 6. Standalone Backlink Relinking
+Use **Relink Backlinks to Existing Cross-Vault Note** when the destination note already exists. Select that note in another vault, review affected backlinks, and redirect them without moving, editing, or deleting the current duplicate.
+
+### 7. Duplicate Note Detector
 Scan all your connected vaults to find notes with the exact same name, helping you merge scattered information.
 
 ---
@@ -56,6 +61,7 @@ Open the **Command Palette** (Ctrl/Cmd + P) and type `Multi-Vault Navigator` to 
 - **Recent Files**
 - **Switch Vault**
 - **Move/Copy Current File to Vault**
+- **Relink Backlinks to Existing Cross-Vault Note**
 - **Copy Cross-Vault Link for Current File**
 - **Find Duplicate Notes**
 - **Open Global Tag Explorer**
@@ -75,6 +81,14 @@ Go to **Settings > Multi-Vault Navigator** to configure:
 - **Global Exclude Patterns**: Comma-separated list of folder/file names to ignore across all vaults (e.g., `Private, secrets`).
 
 ---
+
+## Safe migration behavior
+
+The Move/Copy review reports the selected destination path, outgoing links, backlinks, affected source files, and skipped references. Existing cross-vault links, embeds, attachments, unresolved links, self-links, and Markdown-style links are left unchanged and reported rather than guessed.
+
+Destination files are never overwritten. Migration aborts if an affected source note changes after review. If writing a destination, updating backlinks, or trashing the source fails, completed edits are rolled back from originals held in memory; no backup files are created.
+
+Cross-vault references use the shortest safe target. A unique note becomes `[[vault::Note]]`; duplicate basenames use an extensionless path such as `[[vault::Folder/Note]]`.
 
 ## Installation
 
@@ -100,7 +114,13 @@ npm run build  # type-check + production build
 To get automatic local deploys on every build, copy `deploy-targets.example.json`
 to `deploy-targets.json` (gitignored) and list your own vaults'
 `.obsidian/plugins/multi-vault-navigator` folders. Without that file the build
-just produces `main.js` in the repo root.
+just produces `main.js` in the repo root. This is the preferred local deployment
+path for the ErraticPattern fork and replaces scripts that download hard-coded
+versions from `Finarfin12/Multi-Vault-Plugin-Obsidian`.
+
+For a published release, download all three assets from a matching tag under
+`ErraticPattern/Multi-Vault-Plugin-Obsidian`: `main.js`, `manifest.json`, and
+`styles.css`.
 
 Releases are built by CI: pushing a version tag (`git tag 2.3.0 && git push --tags`)
 creates a GitHub release with `main.js`, `manifest.json`, and `styles.css` attached.
