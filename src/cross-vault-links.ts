@@ -1,6 +1,8 @@
 import { Editor, EditorPosition, MarkdownView, Notice } from 'obsidian';
 import type MultiVaultNavigatorPlugin from './main';
 import type { IndexedFile } from './types';
+import { resolveIndexedNote } from './note-resolution';
+import { CrossVaultTargetSuggestModal } from './modals/cross-vault-target-suggest-modal';
 
 // posAtMouse/getClickableTokenAt exist on Obsidian's editor at runtime but are
 // not part of the public typings. Feature-detected before use.
@@ -28,23 +30,29 @@ export function parseCrossVaultHref(href: string): CrossVaultRef | null {
   return { vaultName, noteName };
 }
 
-function findCrossVaultTarget(plugin: MultiVaultNavigatorPlugin, ref: CrossVaultRef): IndexedFile | undefined {
-  const vault = ref.vaultName.toLowerCase();
-  const note = ref.noteName.toLowerCase();
-  return plugin.indexer.getIndexedFiles().find(f => {
-    if (f.vaultName.toLowerCase() !== vault) return false;
-    const rel = f.relativePath.toLowerCase();
-    return f.basename.toLowerCase() === note || rel === note || rel === `${note}.md`;
-  });
-}
-
-function openCrossVaultRef(plugin: MultiVaultNavigatorPlugin, ref: CrossVaultRef): void {
-  const target = findCrossVaultTarget(plugin, ref);
-  if (target) {
-    void plugin.fileOpener.openFile(target);
+function withCrossVaultTarget(
+  plugin: MultiVaultNavigatorPlugin,
+  ref: CrossVaultRef,
+  onResolved: (target: IndexedFile) => void,
+): void {
+  const resolution = resolveIndexedNote(
+    plugin.indexer.getIndexedFiles(),
+    ref.vaultName,
+    ref.noteName,
+  );
+  if (resolution.kind === 'resolved') {
+    onResolved(resolution.target);
+  } else if (resolution.kind === 'ambiguous') {
+    new CrossVaultTargetSuggestModal(plugin.app, resolution.candidates, onResolved).open();
   } else {
     new Notice(`File "${ref.noteName}" not found in vault "${ref.vaultName}".`);
   }
+}
+
+function openCrossVaultRef(plugin: MultiVaultNavigatorPlugin, ref: CrossVaultRef): void {
+  withCrossVaultTarget(plugin, ref, (target) => {
+    void plugin.fileOpener.openFile(target);
+  });
 }
 
 function rewriteReadingViewAnchor(plugin: MultiVaultNavigatorPlugin, anchor: HTMLAnchorElement, ref: CrossVaultRef, href: string): void {
@@ -82,10 +90,9 @@ function rewriteReadingViewAnchor(plugin: MultiVaultNavigatorPlugin, anchor: HTM
   anchor.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    const target = findCrossVaultTarget(plugin, ref);
-    if (target) {
+    withCrossVaultTarget(plugin, ref, (target) => {
       window.open(`obsidian://open?vault=${encodeURIComponent(target.vaultName)}&file=${encodeURIComponent(target.relativePath)}`);
-    }
+    });
   });
 }
 

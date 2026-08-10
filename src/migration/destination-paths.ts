@@ -95,5 +95,8 @@ export function chooseCrossVaultNotePath(
     file.basename.toLowerCase() === basename.toLowerCase() &&
     toPosix(file.relativePath).toLowerCase() !== destinationLower,
   );
-  return conflictingFiles.length === 0 ? basename : destinationWithoutExtension;
+  if (conflictingFiles.length === 0) return basename;
+  return destinationWithoutExtension.includes('/')
+    ? destinationWithoutExtension
+    : `/${destinationWithoutExtension}`;
 }

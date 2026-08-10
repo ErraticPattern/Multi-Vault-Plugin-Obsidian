@@ -85,6 +85,13 @@ describe('cross-vault note references', () => {
     ])).toBe('Notes/Zerotier');
   });
 
+  it('uses an explicitly rooted path for a duplicated root note', () => {
+    expect(chooseCrossVaultNotePath('README.md', [
+      { relativePath: 'README.md', basename: 'README' },
+      { relativePath: 'Lab/README.md', basename: 'README' },
+    ])).toBe('/README');
+  });
+
   it('treats basename collisions case-insensitively', () => {
     expect(chooseCrossVaultNotePath('Notes/Zerotier.md', [
       { relativePath: 'Archive/ZEROTIER.md', basename: 'ZEROTIER' },
