@@ -15,6 +15,7 @@ class MemoryIo implements MigrationIo {
   failDestinationWrite = false;
   failSourceWriteAt: number | null = null;
   failTrash = false;
+  failTrashAfterDelete = false;
   failRollbackPath: string | null = null;
   private sourceWriteCount = 0;
 
@@ -27,7 +28,7 @@ class MemoryIo implements MigrationIo {
   }
   async writeDestination(absolutePath: string, content: string): Promise<void> {
     this.log.push('write-destination');
-    this.destination.set(absolutePath, content);
+    this.destination.set(absolutePath, this.failDestinationWrite ? 'concurrent destination' : content);
     if (this.failDestinationWrite) throw new Error('destination write failed');
   }
   async removeDestination(absolutePath: string): Promise<void> {
@@ -53,6 +54,11 @@ class MemoryIo implements MigrationIo {
     this.log.push(`trash-source:${vaultPath}`);
     if (this.failTrash) throw new Error('trash failed');
     this.source.delete(vaultPath);
+    if (this.failTrashAfterDelete) throw new Error('trash reported failure after delete');
+  }
+  async restoreSourceFile(vaultPath: string, content: string): Promise<void> {
+    this.log.push(`restore-source:${vaultPath}`);
+    this.source.set(vaultPath, content);
   }
 }
 
@@ -147,14 +153,14 @@ describe('executeMigrationPlan rollback and stale protection', () => {
     expect(io.log.some((entry) => entry.startsWith('write-'))).toBe(false);
   });
 
-  it('removes a partially written destination when destination writing fails', async () => {
+  it('does not remove an unowned destination when exclusive destination writing fails', async () => {
     const io = readyIo();
     io.failDestinationWrite = true;
 
     await expect(executeMigrationPlan(plan('move'), io)).rejects
       .toBeInstanceOf(MigrationExecutionError);
 
-    expect(io.destination.size).toBe(0);
+    expect(io.destination.get('C:/target/Notes/Zerotier.md')).toBe('concurrent destination');
     expect(io.source.get('Notes/Index.md')).toBe('See [[Zerotier]].');
     expect(io.source.has('Projects/Zerotier.md')).toBe(true);
   });
@@ -190,6 +196,18 @@ describe('executeMigrationPlan rollback and stale protection', () => {
     expect(io.destination.size).toBe(0);
     expect(io.source.get('Notes/Index.md')).toBe('See [[Zerotier]].');
     expect(io.source.has('Projects/Zerotier.md')).toBe(true);
+  });
+
+  it('restores the source if trash reports failure after removing it', async () => {
+    const io = readyIo();
+    io.failTrashAfterDelete = true;
+
+    await expect(executeMigrationPlan(plan('move'), io)).rejects
+      .toBeInstanceOf(MigrationExecutionError);
+
+    expect(io.source.get('Projects/Zerotier.md')).toBe('Uses [[EEG]].');
+    expect(io.source.get('Notes/Index.md')).toBe('See [[Zerotier]].');
+    expect(io.destination.size).toBe(0);
   });
 
   it('reports rollback failures alongside the original error', async () => {

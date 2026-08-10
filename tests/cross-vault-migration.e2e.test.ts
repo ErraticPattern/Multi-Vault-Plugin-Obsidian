@@ -32,6 +32,11 @@ class FixtureIo implements MigrationIo {
   async trashSourceFile(vaultPath: string): Promise<void> {
     await unlink(path.join(this.sourceRoot, vaultPath));
   }
+  async restoreSourceFile(vaultPath: string, content: string): Promise<void> {
+    const absolutePath = path.join(this.sourceRoot, vaultPath);
+    await mkdir(path.dirname(absolutePath), { recursive: true });
+    await writeFile(absolutePath, content);
+  }
 }
 
 function reference(

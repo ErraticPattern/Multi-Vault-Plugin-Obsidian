@@ -1,5 +1,5 @@
 import { TFile, type App } from 'obsidian';
-import { access, mkdir, readFile, rm, writeFile } from 'fs/promises';
+import { access, mkdir, open, readFile, rm } from 'fs/promises';
 import * as path from 'path';
 import type { MigrationIo } from './migration-transaction';
 
@@ -21,7 +21,17 @@ export class ObsidianMigrationIo implements MigrationIo {
 
   async writeDestination(absolutePath: string, content: string): Promise<void> {
     await mkdir(path.dirname(absolutePath), { recursive: true });
-    await writeFile(absolutePath, content, { encoding: 'utf8', flag: 'wx' });
+    const handle = await open(absolutePath, 'wx');
+    let closed = false;
+    try {
+      await handle.writeFile(content, { encoding: 'utf8' });
+      await handle.close();
+      closed = true;
+    } catch (error: unknown) {
+      if (!closed) await handle.close().catch(() => undefined);
+      await rm(absolutePath, { force: true }).catch(() => undefined);
+      throw error;
+    }
   }
 
   async removeDestination(absolutePath: string): Promise<void> {
@@ -41,6 +51,15 @@ export class ObsidianMigrationIo implements MigrationIo {
   async trashSourceFile(vaultPath: string): Promise<void> {
     const file = this.getSourceMarkdownFile(vaultPath);
     await this.app.fileManager.trashFile(file);
+  }
+
+  async restoreSourceFile(vaultPath: string, content: string): Promise<void> {
+    const existing = this.app.vault.getAbstractFileByPath(vaultPath);
+    if (existing instanceof TFile) {
+      await this.app.vault.modify(existing, content);
+      return;
+    }
+    await this.app.vault.create(vaultPath, content);
   }
 
   private getSourceMarkdownFile(vaultPath: string): TFile {

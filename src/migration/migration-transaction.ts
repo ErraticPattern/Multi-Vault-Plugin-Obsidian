@@ -8,6 +8,7 @@ export interface MigrationIo {
   readSourceFile(vaultPath: string): Promise<string>;
   writeSourceFile(vaultPath: string, content: string): Promise<void>;
   trashSourceFile(vaultPath: string): Promise<void>;
+  restoreSourceFile(vaultPath: string, content: string): Promise<void>;
 }
 
 export interface MigrationExecutionResult {
@@ -75,12 +76,13 @@ export async function executeMigrationPlan(
     throw new Error('Destination content is missing from move/copy plan');
   }
 
-  let destinationWriteAttempted = false;
+  let destinationWritten = false;
+  let sourceTrashAttempted = false;
   const attemptedBacklinks: typeof plan.backlinkEdits = [];
   try {
     if (plan.destinationAbsolutePath) {
-      destinationWriteAttempted = true;
       await io.writeDestination(plan.destinationAbsolutePath, plan.destinationContent!);
+      destinationWritten = true;
     }
 
     for (const edit of plan.backlinkEdits) {
@@ -89,10 +91,22 @@ export async function executeMigrationPlan(
     }
 
     if (plan.mode === 'move') {
+      sourceTrashAttempted = true;
       await io.trashSourceFile(plan.sourcePath);
     }
   } catch (error: unknown) {
     const rollbackErrors: Error[] = [];
+    if (sourceTrashAttempted) {
+      try {
+        await io.readSourceFile(plan.sourcePath);
+      } catch {
+        try {
+          await io.restoreSourceFile(plan.sourcePath, plan.sourceOriginalContent);
+        } catch (rollbackError: unknown) {
+          rollbackErrors.push(asError(rollbackError));
+        }
+      }
+    }
     for (const edit of [...attemptedBacklinks].reverse()) {
       try {
         await io.writeSourceFile(edit.path, edit.originalContent);
@@ -100,7 +114,7 @@ export async function executeMigrationPlan(
         rollbackErrors.push(asError(rollbackError));
       }
     }
-    if (destinationWriteAttempted && plan.destinationAbsolutePath) {
+    if (destinationWritten && plan.destinationAbsolutePath) {
       try {
         await io.removeDestination(plan.destinationAbsolutePath);
       } catch (rollbackError: unknown) {

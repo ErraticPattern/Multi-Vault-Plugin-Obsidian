@@ -36,6 +36,7 @@ class ControllerIo implements MigrationIo {
   async readSourceFile(path: string) { return this.source.get(path)!; }
   async writeSourceFile(path: string, content: string) { this.source.set(path, content); }
   async trashSourceFile(path: string) { this.source.delete(path); }
+  async restoreSourceFile(path: string, content: string) { this.source.set(path, content); }
 }
 
 describe('migration command registration', () => {

@@ -28,12 +28,19 @@ describe('ObsidianMigrationIo', () => {
     roots.push(root);
     const sourceFile = testFile('Notes/Source.md');
     const files = new Map([[sourceFile.path, 'original']]);
+    const abstractFiles = new Map([[sourceFile.path, sourceFile]]);
     let trashed: string | null = null;
     const app = {
       vault: {
-        getAbstractFileByPath: (vaultPath: string) => vaultPath === sourceFile.path ? sourceFile : null,
+        getAbstractFileByPath: (vaultPath: string) => abstractFiles.get(vaultPath) ?? null,
         read: async (file: TFile) => files.get(file.path)!,
         modify: async (file: TFile, content: string) => { files.set(file.path, content); },
+        create: async (vaultPath: string, content: string) => {
+          const created = testFile(vaultPath);
+          abstractFiles.set(vaultPath, created);
+          files.set(vaultPath, content);
+          return created;
+        },
       },
       fileManager: {
         trashFile: async (file: TFile) => { trashed = file.path; },
@@ -51,6 +58,8 @@ describe('ObsidianMigrationIo', () => {
     expect(files.get(sourceFile.path)).toBe('updated');
     await io.trashSourceFile(sourceFile.path);
     expect(trashed).toBe(sourceFile.path);
+    await io.restoreSourceFile('Notes/Restored.md', 'restored');
+    expect(files.get('Notes/Restored.md')).toBe('restored');
     await io.removeDestination(destination);
     expect(await io.destinationExists(destination)).toBe(false);
     await expect(readFile(`${destination}.bak`)).rejects.toThrow();
