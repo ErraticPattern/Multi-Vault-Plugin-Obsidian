@@ -34,7 +34,7 @@ Natively, Obsidian does not allow you to open a note from outside the active vau
 - Includes actions to quickly "Open in Source Vault" or "Copy Cross-Vault Link."
 
 ### 3. Natural Cross-Vault Links
-Write `[[VaultName::NoteTitle]]` in any note. The plugin parses these references and allows you to click them to instantly open the cross-vault note in the read-only preview. **Copy Cross-Vault Link for Current File** opens a vault chooser and copies this natural wikilink format instead of a protocol URL.
+Write `[[VaultName::NoteTitle]]` in any note. The plugin parses these references and allows you to click them to instantly open the cross-vault note in the read-only preview. If the name is ambiguous, clicking opens a searchable chooser showing each full relative path. Generated links use `[[vault::Folder/README]]` when a basename is duplicated; a duplicated note at the vault root uses `[[vault::/README]]`. **Copy Cross-Vault Link for Current File** opens a vault chooser and copies this natural wikilink format instead of a protocol URL.
 
 ### 4. Recent Files & Quick Switch
 - **Recent Files**: See the 50 most recently modified files across *all* your vaults.
@@ -76,7 +76,7 @@ Go to **Settings > Multi-Vault Navigator** to configure:
 - **Vault List**: Toggle indexing for specific vaults, configure custom colors and icons, or remove them.
 - **Add Manual Vault**: Add an absolute path to a vault if it wasn't auto-detected.
 - **Appearance**: Choose between "Classic" and "Modern Card" layouts for search results.
-- **Refresh & Clear Index**: Manually rebuild or wipe the cross-vault index cache.
+- **Refresh & Clear Index**: Manually rebuild or wipe the cross-vault index cache. Normal startup refreshes only new, changed, or removed entries.
 - **Max Preview Characters**: Length of text snippets saved for search indexing.
 - **Global Exclude Patterns**: Comma-separated list of folder/file names to ignore across all vaults (e.g., `Private, secrets`).
 
@@ -86,7 +86,9 @@ Go to **Settings > Multi-Vault Navigator** to configure:
 
 The Move/Copy review reports the selected destination path, outgoing links, backlinks, affected source files, and skipped references. Existing cross-vault links, embeds, attachments, unresolved links, self-links, and Markdown-style links are left unchanged and reported rather than guessed.
 
-The destination folder is optional and defaults to the target vault root. Destination files are never overwritten. Migration aborts if an affected source note changes after review. If writing a destination, updating backlinks, or trashing the source fails, completed edits are rolled back from originals held in memory; no backup files are created.
+The destination folder is optional and defaults to the target vault root. Destination files are never overwritten. Backlink discovery uses Obsidian's resolved-link metadata and reads only the source plus actual backlink notes. Preview and Review reuse one current plan. Migration aborts if an affected source note changes after review.
+
+If writing a destination, updating backlinks, or trashing the source fails, completed edits are rolled back from originals held in memory; no backup files are created. After a successful migration, only created, deleted, or edited index entries are refreshed. A post-commit index failure does not misreport the migration as rolled back; the notice asks you to run **Refresh Index**.
 
 Cross-vault references use the shortest safe target. A unique note becomes `[[vault::Note]]`; duplicate basenames use an extensionless path such as `[[vault::Folder/Note]]`.
 

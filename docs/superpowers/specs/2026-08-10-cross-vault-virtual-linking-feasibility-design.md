@@ -79,7 +79,7 @@ Resolution returns a discriminated result:
 - `ambiguous`: multiple canonical candidates
 - `missing`: no candidate
 
-A short link such as `[[medicine::README]]` resolves directly only when unique. When ambiguous, opening presents a searchable chooser labeled with vault and full relative path. Generated links use the basename when unique and the extensionless relative path when required, for example `[[medicine::Notes/Cardiology/README]]`.
+A short link such as `[[medicine::README]]` resolves directly only when unique. When ambiguous, opening presents a searchable chooser labeled with vault and full relative path. Generated links use the basename when unique and the extensionless relative path when required, for example `[[medicine::Notes/Cardiology/README]]`. A duplicated note at the vault root uses an explicit leading slash, for example `[[medicine::/README]]`, because its extensionless relative path would otherwise be indistinguishable from the basename shorthand.
 
 No runtime resolver may silently use the first array match.
 
