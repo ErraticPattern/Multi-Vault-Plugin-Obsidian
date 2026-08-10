@@ -100,10 +100,13 @@ export class Indexer {
       }
       const vault = this.vaultRegistry.getVaultById(mutation.vaultId);
       if (!vault) throw new Error(`Vault is not configured: ${mutation.vaultId}`);
-      const entry = await this.scanner.scanFileAsync(vault, mutation.relativePath);
-      if (!entry) {
+      if (!this.scanner.isPathIncluded(vault, mutation.relativePath)) {
         filesByIdentity.delete(identity);
         continue;
+      }
+      const entry = await this.scanner.scanFileAsync(vault, mutation.relativePath);
+      if (!entry) {
+        throw new Error(`Upserted index file could not be read: ${vault.name}/${mutation.relativePath}`);
       }
       const indexed = await this.parser.parseMarkdownFileAsync(entry, vault);
       filesByIdentity.set(identity, indexed);

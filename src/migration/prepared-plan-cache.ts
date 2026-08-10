@@ -1,5 +1,10 @@
-import type { MigrationPlan, MigrationPlanFingerprint } from './migration-types';
-export type { MigrationPlanFingerprint } from './migration-types';
+import type {
+  MigrationPlan,
+  MigrationPlanFingerprint,
+  TargetCatalogFingerprint,
+} from './migration-types';
+import type { IndexedNotePath } from './destination-paths';
+export type { MigrationPlanFingerprint, TargetCatalogFingerprint } from './migration-types';
 
 export type ResolvedLinks = Record<string, Record<string, number>>;
 
@@ -14,6 +19,33 @@ export function createMigrationPlanFingerprint(
     .filter(([, count]) => count > 0)
     .sort(([left], [right]) => left.localeCompare(right));
   return { sourceMtime, backlinks };
+}
+
+export function createTargetCatalogFingerprint(
+  vaultId: string,
+  targetRelativePath: string,
+  indexedFiles: IndexedNotePath[],
+): TargetCatalogFingerprint {
+  const targetBasename = targetRelativePath.replace(/\\/g, '/').replace(/\.md$/i, '')
+    .split('/').pop()!.toLowerCase();
+  const sameBasenamePaths = indexedFiles
+    .filter((file) => file.basename.toLowerCase() === targetBasename)
+    .map((file) => file.relativePath.replace(/\\/g, '/'))
+    .sort((left, right) => left.localeCompare(right));
+  return { vaultId, targetRelativePath, sameBasenamePaths };
+}
+
+export function isTargetCatalogFingerprintCurrent(
+  fingerprint: TargetCatalogFingerprint,
+  indexedFiles: IndexedNotePath[],
+): boolean {
+  const current = createTargetCatalogFingerprint(
+    fingerprint.vaultId,
+    fingerprint.targetRelativePath,
+    indexedFiles,
+  );
+  return JSON.stringify(current.sameBasenamePaths) ===
+    JSON.stringify(fingerprint.sameBasenamePaths);
 }
 
 export function isMigrationPlanFingerprintCurrent(

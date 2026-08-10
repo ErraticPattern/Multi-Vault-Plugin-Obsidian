@@ -19,12 +19,30 @@ export class FileScanner {
     this.globalExcludes = globalExcludes;
   }
 
+  public isPathIncluded(vault: VaultConfig, relativePath: string): boolean {
+    const normalized = relativePath.replace(/\\/g, '/');
+    const lower = normalized.toLowerCase();
+    const segments = lower.split('/');
+    if (segments.some((segment) => this.defaultExcludes.has(segment))) return false;
+    const fileName = path.posix.basename(lower);
+    const excludes = [...this.globalExcludes, ...(vault.excludePatterns || [])]
+      .map((pattern) => pattern.trim().toLowerCase())
+      .filter(Boolean);
+    if (excludes.some((pattern) => lower.includes(pattern) || fileName.includes(pattern))) return false;
+    const includes = (vault.includePatterns || [])
+      .map((pattern) => pattern.trim().toLowerCase())
+      .filter(Boolean);
+    return includes.length === 0 ||
+      includes.some((pattern) => lower.includes(pattern) || fileName.includes(pattern));
+  }
+
   public async scanFileAsync(vault: VaultConfig, relativePath: string): Promise<FileEntry | null> {
     const normalized = relativePath.replace(/\\/g, '/');
     if (
       path.posix.isAbsolute(normalized) ||
       normalized.split('/').includes('..') ||
-      !normalized.toLowerCase().endsWith('.md')
+      !normalized.toLowerCase().endsWith('.md') ||
+      !this.isPathIncluded(vault, normalized)
     ) return null;
     const root = path.resolve(vault.path);
     const absolutePath = path.resolve(root, normalized.replace(/\//g, path.sep));
@@ -40,8 +58,9 @@ export class FileScanner {
         mtime: stats.mtimeMs,
         size: stats.size,
       };
-    } catch {
-      return null;
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
     }
   }
 
@@ -64,40 +83,13 @@ export class FileScanner {
       }
 
       for (const entry of entries) {
-        if (this.defaultExcludes.has(entry.name)) continue;
-        
         const fullPath = path.join(dir, entry.name);
         const relativePath = path.relative(rootPath, fullPath).replace(/\\/g, '/');
+        if (!this.isPathIncluded(vault, relativePath)) continue;
 
-        // Apply vault.excludePatterns & global excludes
-        let excluded = false;
-        const allExcludes = [...this.globalExcludes, ...(vault.excludePatterns || [])];
-        for (const pattern of allExcludes) {
-          if (!pattern.trim()) continue;
-          const p = pattern.trim().toLowerCase();
-          if (relativePath.toLowerCase().includes(p) || entry.name.toLowerCase().includes(p)) {
-            excluded = true;
-            break;
-          }
-        }
-        if (excluded) continue;
-        
         if (entry.isDirectory()) {
           await walk(fullPath);
         } else if (entry.isFile() && entry.name.endsWith('.md')) {
-          // Apply vault.includePatterns if configured
-          const includePatterns = (vault.includePatterns || []).filter(p => p.trim().length > 0);
-          if (includePatterns.length > 0) {
-            let included = false;
-            for (const pattern of includePatterns) {
-              const p = pattern.trim().toLowerCase();
-              if (relativePath.toLowerCase().includes(p) || entry.name.toLowerCase().includes(p)) {
-                included = true;
-                break;
-              }
-            }
-            if (!included) continue;
-          }
           try {
             const stats = await fs.promises.stat(fullPath);
             files.push({

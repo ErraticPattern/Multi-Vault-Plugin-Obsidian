@@ -52,6 +52,7 @@ function harness(
     ...scannedEntries.map(({ vaultId, file }) => [`${vaultId}:${file.relativePath}`, file] as const),
   ]);
   const scanner = {
+    isPathIncluded: () => true,
     scanVaultAsync: async (vault: VaultConfig) => {
       scanCalls += 1;
       if (scanDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, scanDelayMs));
@@ -111,6 +112,18 @@ describe('Indexer.applyMutations', () => {
     expect(test.indexer.getIndexedFiles().map((file) => file.id).sort()).toEqual([
       'ideas:Index.md', 'medicine:Notes/Source.md',
     ]);
+  });
+
+  it('rejects an included upsert that cannot be read instead of silently dropping it', async () => {
+    const original = indexed('ideas', 'Missing.md');
+    const test = harness([original]);
+    await test.indexer.initialize();
+
+    await expect(test.indexer.applyMutations([
+      { kind: 'upsert', vaultId: 'ideas', relativePath: 'Missing.md' },
+    ])).rejects.toThrow(/could not be read/i);
+
+    expect(test.indexer.getIndexedFiles()).toEqual([original]);
   });
 
   it('does not publish in-memory mutations when cache persistence fails', async () => {

@@ -131,6 +131,39 @@ describe('cross-vault migration workflow', () => {
     expect(await readFile(destination, 'utf8')).toContain('[[ideas::EEG#Acquisition|EEG setup]]');
   });
 
+  it('path-qualifies a moved root README when the target vault has another README', async () => {
+    const { ideas, mathematics } = await fixture();
+    const sourceContent = 'Root README.';
+    const backlinkContent = 'See [[README]].';
+    await writeFile(path.join(ideas, 'README.md'), sourceContent);
+    await writeFile(path.join(ideas, 'Index.md'), backlinkContent);
+    await mkdir(path.join(mathematics, 'Lab'), { recursive: true });
+    await writeFile(path.join(mathematics, 'Lab/README.md'), 'Lab README.');
+    const notes: NoteSnapshot[] = [
+      { path: 'README.md', basename: 'README', content: sourceContent, links: [] },
+      {
+        path: 'Index.md', basename: 'Index', content: backlinkContent,
+        links: [reference('Index.md', backlinkContent, '[[README]]', 'README', 'README.md')],
+      },
+    ];
+    const destination = path.join(mathematics, 'README.md');
+    const plan = planMoveOrCopy({
+      mode: 'move', sourcePath: 'README.md', sourceVaultName: 'ideas',
+      targetVaultName: 'mathematics', destinationAbsolutePath: destination,
+      destinationRelativePath: 'README.md', notes,
+      sourceIndexedFiles: [{ relativePath: 'README.md', basename: 'README' }],
+      targetIndexedFiles: [{ relativePath: 'Lab/README.md', basename: 'README' }],
+      preserveLinks: true,
+    });
+
+    await executeMigrationPlan(plan, new FixtureIo(ideas));
+
+    expect(await readFile(path.join(ideas, 'Index.md'), 'utf8'))
+      .toBe('See [[mathematics::/README]].');
+    expect(await readFile(destination, 'utf8')).toBe(sourceContent);
+    expect(await readFile(path.join(mathematics, 'Lab/README.md'), 'utf8')).toBe('Lab README.');
+  });
+
   it('relinks to an existing note without deleting either duplicate', async () => {
     const { ideas, mathematics, notes, source } = await fixture();
     const existing = path.join(mathematics, 'Notes', 'Zerotier.md');

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   createMigrationPlanFingerprint,
+  createTargetCatalogFingerprint,
   isMigrationPlanFingerprintCurrent,
+  isTargetCatalogFingerprintCurrent,
   PreparedPlanCache,
 } from '../src/migration/prepared-plan-cache';
 import type { MigrationPlan } from '../src/migration/migration-types';
@@ -87,5 +89,21 @@ describe('migration plan fingerprints', () => {
     expect(isMigrationPlanFingerprintCurrent(fingerprint, 'Source.md', 1, {
       'Index.md': { 'Source.md': 2 },
     })).toBe(false);
+  });
+
+  it('invalidates when a new target-vault basename collision appears', () => {
+    const target = createTargetCatalogFingerprint(
+      'medicine',
+      'Notes/README.md',
+      [{ relativePath: 'Notes/README.md', basename: 'README' }],
+    );
+
+    expect(isTargetCatalogFingerprintCurrent(target, [
+      { relativePath: 'Notes/README.md', basename: 'README' },
+    ])).toBe(true);
+    expect(isTargetCatalogFingerprintCurrent(target, [
+      { relativePath: 'Notes/README.md', basename: 'README' },
+      { relativePath: 'Archive/README.md', basename: 'README' },
+    ])).toBe(false);
   });
 });

@@ -47,9 +47,16 @@ export interface PlannedFileEdit {
   rewrites?: LinkRewritePreview[];
 }
 
+export interface TargetCatalogFingerprint {
+  vaultId: string;
+  targetRelativePath: string;
+  sameBasenamePaths: string[];
+}
+
 export interface MigrationPlanFingerprint {
   sourceMtime: number;
   backlinks: Array<[sourcePath: string, count: number]>;
+  target?: TargetCatalogFingerprint;
 }
 
 export interface MigrationPlan {

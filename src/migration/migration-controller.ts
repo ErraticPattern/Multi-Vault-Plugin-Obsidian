@@ -11,7 +11,9 @@ import { ObsidianMigrationIo } from './obsidian-migration-io';
 import { isMarkdownExtension } from './migration-view-models';
 import {
   createMigrationPlanFingerprint,
+  createTargetCatalogFingerprint,
   isMigrationPlanFingerprintCurrent,
+  isTargetCatalogFingerprintCurrent,
 } from './prepared-plan-cache';
 import type { IndexMutation } from '../indexer/index-mutations';
 
@@ -86,7 +88,13 @@ export class MigrationController {
         relativePath: edit.path,
       })) : []),
     ];
-    return this.withMetadata(activeFile, plan, indexMutations);
+    return this.withMetadata(
+      activeFile,
+      plan,
+      indexMutations,
+      targetVault.id,
+      destination.relativePath,
+    );
   }
 
   async planRelink(
@@ -118,15 +126,28 @@ export class MigrationController {
       vaultId: sourceVault.id,
       relativePath: edit.path,
     }));
-    return this.withMetadata(activeFile, plan, indexMutations);
+    return this.withMetadata(
+      activeFile,
+      plan,
+      indexMutations,
+      targetVault.id,
+      targetRelativePath,
+    );
   }
 
   isPlanCurrent(plan: MigrationPlan, activeFile: TFile): boolean {
-    return Boolean(plan.fingerprint) && isMigrationPlanFingerprintCurrent(
-      plan.fingerprint!,
+    if (!plan.fingerprint || !isMigrationPlanFingerprintCurrent(
+      plan.fingerprint,
       activeFile.path,
       activeFile.stat?.mtime ?? 0,
       this.app.metadataCache.resolvedLinks,
+    )) return false;
+    const target = plan.fingerprint.target;
+    if (!target) return true;
+    if (!this.vaultRegistry.getVaultById(target.vaultId)) return false;
+    return isTargetCatalogFingerprintCurrent(
+      target,
+      this.indexedMarkdownFiles(target.vaultId),
     );
   }
 
@@ -148,15 +169,24 @@ export class MigrationController {
     activeFile: TFile,
     plan: MigrationPlan,
     indexMutations: IndexMutation[],
+    targetVaultId: string,
+    targetRelativePath: string,
   ): MigrationPlan {
     return {
       ...plan,
       indexMutations,
-      fingerprint: createMigrationPlanFingerprint(
-        activeFile.path,
-        activeFile.stat?.mtime ?? 0,
-        this.app.metadataCache.resolvedLinks,
-      ),
+      fingerprint: {
+        ...createMigrationPlanFingerprint(
+          activeFile.path,
+          activeFile.stat?.mtime ?? 0,
+          this.app.metadataCache.resolvedLinks,
+        ),
+        target: createTargetCatalogFingerprint(
+          targetVaultId,
+          targetRelativePath,
+          this.indexedMarkdownFiles(targetVaultId),
+        ),
+      },
     };
   }
 
