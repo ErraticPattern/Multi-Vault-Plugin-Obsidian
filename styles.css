@@ -716,3 +716,22 @@ button.mvn-btn-small:hover {
 .mvn-cross-vault-link.mvn-vault-colored:hover {
   filter: brightness(1.15);
 }
+
+/* Cross-vault migration */
+.mvn-migration-suggestion-title {
+  font-weight: var(--font-semibold);
+}
+
+.mvn-migration-suggestion-path,
+.mvn-migration-paths,
+.mvn-migration-skipped {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.mvn-migration-paths,
+.mvn-migration-skipped,
+.mvn-migration-summary {
+  max-height: 12rem;
+  overflow: auto;
+}

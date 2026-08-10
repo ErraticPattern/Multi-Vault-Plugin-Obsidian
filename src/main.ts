@@ -10,6 +10,7 @@ import { SearchModal } from './modals/search-modal';
 import { SwitchVaultModal } from './modals/switch-vault-modal';
 import { RecentFilesModal } from './modals/recent-files-modal';
 import { FileOperationModal } from './modals/file-operation-modal';
+import { RelinkBacklinksModal } from './modals/relink-backlinks-modal';
 import { DuplicateDetectorModal } from './modals/duplicate-detector-modal';
 import { VIEW_TYPE_EXTERNAL_FILE, ExternalFileView } from './views/external-file-view';
 import { VIEW_TYPE_SEARCH_PAGE, SearchPageView } from './views/search-page-view';
@@ -17,6 +18,8 @@ import { VIEW_TYPE_TAG_EXPLORER, TagExplorerView } from './views/tag-explorer-vi
 import { VIEW_TYPE_DAILY_DASHBOARD, DailyDashboardView } from './views/daily-dashboard-view';
 import { VIEW_TYPE_SIDEBAR, SidebarView } from './views/sidebar-view';
 import { Notice, WorkspaceLeaf } from 'obsidian';
+import { MigrationController } from './migration/migration-controller';
+import { registerMigrationCommands } from './migration/migration-commands';
 
 export default class MultiVaultNavigatorPlugin extends Plugin {
   settings: MultiVaultSettings = Object.assign({}, DEFAULT_SETTINGS);
@@ -24,6 +27,7 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
   indexer: Indexer;
   searchEngine: SearchEngine;
   fileOpener: FileOpener;
+  migrationController: MigrationController;
 
   async onload() {
     await this.loadSettings();
@@ -38,6 +42,11 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
     this.indexer = new Indexer(this.app, this.vaultRegistry, this.settings);
     this.searchEngine = new SearchEngine();
     this.fileOpener = new FileOpener(this.app, this.vaultRegistry);
+    this.migrationController = new MigrationController(
+      this.app,
+      this.vaultRegistry,
+      this.indexer,
+    );
 
     // Initialize indexer (load cache)
     await this.indexer.initialize();
@@ -133,12 +142,23 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
       }
     });
 
-    this.addCommand({
-      id: 'multi-vault-move-copy',
-      name: 'Move/Copy Current File to Vault',
-      callback: () => {
-        new FileOperationModal(this.app, this.vaultRegistry, this.indexer).open();
-      }
+    registerMigrationCommands(this, {
+      openMoveCopy: () => {
+        new FileOperationModal(
+          this.app,
+          this.vaultRegistry,
+          this.indexer,
+          this.migrationController,
+        ).open();
+      },
+      openRelink: () => {
+        new RelinkBacklinksModal(
+          this.app,
+          this.vaultRegistry,
+          this.indexer,
+          this.migrationController,
+        ).open();
+      },
     });
 
     this.addCommand({

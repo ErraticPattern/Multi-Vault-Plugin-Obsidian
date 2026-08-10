@@ -1,6 +1,6 @@
 import { TFile, type App } from 'obsidian';
-import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import * as path from 'node:path';
+import { access, mkdir, readFile, rm, writeFile } from 'fs/promises';
+import * as path from 'path';
 import type { MigrationIo } from './migration-transaction';
 
 export class ObsidianMigrationIo implements MigrationIo {

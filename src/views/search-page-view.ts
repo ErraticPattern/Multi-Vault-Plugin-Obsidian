@@ -4,6 +4,7 @@ import { FileOpener } from '../file-opener';
 
 import MultiVaultNavigatorPlugin from '../main';
 import { PromptModal } from '../modals/prompt-modal';
+import { MOVE_COPY_COMMAND_ID, RELINK_BACKLINKS_COMMAND_ID } from '../migration/migration-commands';
 
 export const VIEW_TYPE_SEARCH_PAGE = "mvn-search-page-view";
 
@@ -100,7 +101,12 @@ export class SearchPageView extends ItemView {
     const btnMove = quickActions.createEl('button', { cls: 'mvn-btn-icon' });
     setIcon(btnMove.createSpan(), 'arrow-right-left');
     btnMove.createSpan({ text: 'Move/Copy' });
-    btnMove.onclick = () => (this.app as unknown as AppWithCommands).commands.executeCommandById('multi-vault-navigator:multi-vault-move-copy');
+    btnMove.onclick = () => (this.app as unknown as AppWithCommands).commands.executeCommandById(`multi-vault-navigator:${MOVE_COPY_COMMAND_ID}`);
+
+    const btnRelink = quickActions.createEl('button', { cls: 'mvn-btn-icon' });
+    setIcon(btnRelink.createSpan(), 'link');
+    btnRelink.createSpan({ text: 'Relink Backlinks' });
+    btnRelink.onclick = () => (this.app as unknown as AppWithCommands).commands.executeCommandById(`multi-vault-navigator:${RELINK_BACKLINKS_COMMAND_ID}`);
 
     const filterBar = mainEl.createDiv({ cls: 'mvn-sp-filter-bar', attr: { style: 'display: flex; gap: 10px; margin-bottom: 10px;' } });
     
