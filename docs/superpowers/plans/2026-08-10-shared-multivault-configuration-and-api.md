@@ -504,12 +504,3 @@ Expected: zero vulnerabilities, full green suite, successful non-deploying build
 - [ ] **Step 4: Stop at release gate**
 
 Do not activate shared configuration in production vaults, version, merge, deploy, tag, push, or begin Virtual Linker implementation until the user approves the provider-stage result.
-
-### Review fix report - declarative settings refresh
-
-- Finding: Obsidian 1.13 declarative settings call `getSettingDefinitions()` on tab activation and cannot await `applyLatest(true)`. The prior `display/update` refresh path did not cover that lifecycle safely.
-- Fix: `getSettingDefinitions()` now schedules one guarded background refresh per declarative display, coalesces concurrent requests, and calls `update()` once only when the refresh result is not `unchanged`. The rerender path suppresses self-triggered recursion, so opening the tab does not spin or perform redundant write-backed forced applies.
-- Compatibility: Obsidian 1.12.x keeps the existing async `display()/update()` manual-render behavior.
-- Focused verification: `npm test -- tests/shared-settings-ui.test.ts`
-- TypeScript: `npx tsc -noEmit -skipLibCheck`
-- Full suite: `npm test`
