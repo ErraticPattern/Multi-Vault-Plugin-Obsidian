@@ -21,7 +21,7 @@ Multi-Vault Navigator exposes a capability-checked API with `apiVersion: 1`. The
 ```ts
 interface MultiVaultPublicApiV1 {
   apiVersion: 1;
-  getCurrentVault(): VaultIdentity | null;
+  getCurrentVault(): VaultDescriptor | null;
   getVirtualLinkSettings(): VirtualLinkIntegrationSettings;
   listVirtualLinkTargets(): VirtualLinkTarget[];
   resolveTarget(reference: TargetReference): TargetResolution;
@@ -33,7 +33,7 @@ interface MultiVaultPublicApiV1 {
 
 Multi-Vault keeps exact provider types in a small contract module with no Obsidian implementation dependencies. Virtual Linker defines only the minimal structural consumer types it needs at runtime; it does not import the provider package. Contract fixtures verify both structural views against the same API v1 behavior. Consumers check the version and required capabilities before use.
 
-`VirtualLinkTarget` contains canonical `{ vaultId, relativePath }` identity, title, aliases, vault name, and validated vault color. It contains no note content. API results include only vaults explicitly selected for the current source vault and only files already admitted to Multi-Vault's index.
+`VaultDescriptor` contains the current vault's stable ID, name, and validated color so local targets can use the same palette. `VirtualLinkTarget` contains canonical `{ vaultId, relativePath }` identity, title, aliases, vault name, and validated vault color. It contains no note content. API target results include only vaults explicitly selected for the current source vault and only files already admitted to Multi-Vault's index.
 
 Events distinguish target-catalog changes from appearance-only changes. Virtual Linker batches catalog updates and only restyles on appearance changes.
 
