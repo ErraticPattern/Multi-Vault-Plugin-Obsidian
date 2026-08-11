@@ -86,9 +86,9 @@ Go to **Settings > Multi-Vault Navigator** to configure:
 
 The Move/Copy review reports the selected destination path, outgoing links, backlinks, affected source files, and skipped references. Existing cross-vault links, embeds, attachments, unresolved links, self-links, and Markdown-style links are left unchanged and reported rather than guessed.
 
-The destination folder is optional and defaults to the target vault root. Destination files are never overwritten. Backlink discovery uses Obsidian's resolved-link metadata and reads only the source plus actual backlink notes. Preview and Review reuse one current plan. Migration aborts if an affected source note changes after review.
+The destination folder is optional and defaults to the target vault root. Overwrite is per operation, off by default, and requires a second confirmation before execution. The reviewed overwrite path rejects stale destinations whose current content no longer matches what was reviewed. Backlink discovery uses Obsidian's resolved-link metadata and reads only the source plus actual backlink notes. Preview and Review reuse one current plan. Migration aborts if an affected source note changes after review.
 
-If writing a destination, updating backlinks, or trashing the source fails, completed edits are rolled back from originals held in memory; no backup files are created. After a successful migration, only created, deleted, or edited index entries are refreshed. A post-commit index failure does not misreport the migration as rolled back; the notice asks you to run **Refresh Index**.
+If writing a destination, updating backlinks, or trashing the source fails, completed edits are rolled back from originals held in memory; reviewed destination content is restored on recoverable failure and no backup files are created. After a successful migration, only created, deleted, or edited index entries are refreshed. A post-commit index failure does not misreport the migration as rolled back; the notice asks you to run **Refresh Index**.
 
 Cross-vault references use the shortest safe target. A unique note becomes `[[vault::Note]]`; duplicate basenames use an extensionless path such as `[[vault::Folder/Note]]`.
 
