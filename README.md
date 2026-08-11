@@ -67,6 +67,8 @@ Open the **Command Palette** (Ctrl/Cmd + P) and type `Multi-Vault Navigator` to 
 - **Open Global Tag Explorer**
 - **Open Cross-Vault Daily Notes**
 - **Refresh Index**
+- **Sync shared configuration now**
+- **Show shared configuration status**
 
 ---
 
@@ -79,6 +81,8 @@ Go to **Settings > Multi-Vault Navigator** to configure:
 - **Refresh & Clear Index**: Manually rebuild or wipe the cross-vault index cache. Normal startup refreshes only new, changed, or removed entries.
 - **Max Preview Characters**: Length of text snippets saved for search indexing.
 - **Global Exclude Patterns**: Comma-separated list of folder/file names to ignore across all vaults (e.g., `Private, secrets`).
+- **Shared configuration**: Enable machine-wide shared settings, exclude individual vaults from participating, sync immediately, or inspect status. See [Shared configuration across vaults](#shared-configuration-across-vaults).
+- **Virtual Linker integration**: Enable the optional cross-vault integration, choose which vaults the current vault may link into, and pick the link style (Off, Muted text tint, Colored underline, Soft color pill) and intensity (10–90, default 55).
 
 ---
 
@@ -91,6 +95,73 @@ The destination folder is optional and defaults to the target vault root. Overwr
 If writing a destination, updating backlinks, or trashing the source fails, completed edits are rolled back from originals held in memory; reviewed destination content is restored on recoverable failure and no backup files are created. After a successful migration, only created, deleted, or edited index entries are refreshed. A post-commit index failure does not misreport the migration as rolled back; the notice asks you to run **Refresh Index**.
 
 Cross-vault references use the shortest safe target. A unique note becomes `[[vault::Note]]`; duplicate basenames use an extensionless path such as `[[vault::Folder/Note]]`.
+
+---
+
+## Shared configuration across vaults
+
+Shared configuration lets every vault on this machine agree on one vault catalog and one cross-vault appearance, instead of repeating the same settings in each vault. It is **off by default** and nothing is written until you turn it on.
+
+### Where it lives
+
+State is kept outside your vaults, in Obsidian's own application data folder:
+
+```
+%APPDATA%\Obsidian\multi-vault-navigator\shared-settings-v1\
+├── seed.json
+└── patches\
+    ├── <logical-clock>-<writer>-<sequence>-<random>.json
+    └── ...
+```
+
+(macOS: `~/Library/Application Support/obsidian/…`; Linux: `$XDG_CONFIG_HOME/obsidian/…`.)
+
+This is an **immutable journal**, not a mutable file guarded by a lock. `seed.json` is written exactly once. Every later change is a new patch file, written to a unique temporary name and then atomically renamed into place. No vault ever rewrites `seed.json`, an existing patch, or another vault's data, so two vaults changing settings at the same moment cannot corrupt each other and no inter-process lock is needed.
+
+Readers fold the seed and all patches into the effective configuration. Ordering is by each patch's logical clock, with a deterministic tie-break on the patch ID; wall-clock timestamps are diagnostic only, so a clock change on your machine cannot reorder history. The reported **revision** is simply the number of patches folded so far.
+
+### What is shared and what stays local
+
+Shared: the vault catalog (identity, path, display name, color, icon, enabled state, include/exclude patterns), per-vault participation, cross-vault badge and link-color settings, and all Virtual Linker integration settings (global enablement, per-source target vaults, style, intensity).
+
+Local to each vault: saved searches, pinned files, layout, snippets, index cache, and every other runtime preference.
+
+Vault identity is the vault's real filesystem path, resolved through symlinks and Windows junctions and normalized (case-folded on Windows). Folder names are never treated as identity, so two vaults with the same folder name stay distinct.
+
+### Turning it on
+
+The first vault to enable shared configuration must be **Ideas**. It reads only `.obsidian/plugins/multi-vault-navigator/data.json` from that vault and shows you a mandatory preview of the proposed catalog, colors, and shared fields. The store is created only after you confirm. Cancelling, or an invalid Ideas configuration, writes nothing.
+
+In any other participating vault, enable shared configuration and run **Sync shared configuration now**.
+
+### Disabling and opting out
+
+- The **global** toggle turns synchronization off everywhere. The last applied values stay in each vault's local settings.
+- **Per-vault exclusion** keeps one vault out. An excluded vault can still read status, but neither applies nor publishes shared changes — including its own un-exclusion. A participating vault (normally Ideas) has to remove the exclusion.
+
+### Failure behavior
+
+A malformed or future-schema seed or patch is never rewritten and never resets your settings; the vault keeps its last good local values and reports the error under **Show shared configuration status**. Half-written patch files are ignored until their atomic rename completes. Because configuration edits are infrequent, the journal stays small and needs no compaction.
+
+### Privacy and scope
+
+Shared records contain **absolute vault paths**, and the store lives in your local Obsidian application data folder. It is per-machine and is not synced by the plugin; do not place it in a shared or cloud-synced location if those paths are sensitive.
+
+---
+
+## Optional public API
+
+Other plugins can cooperate with Multi-Vault Navigator through a versioned, read-only runtime API, without either side depending on the other's package:
+
+```ts
+const provider = app.plugins.plugins['multi-vault-navigator'];
+const api = provider?.publicApi;
+if (api?.apiVersion === 1) { /* … */ }
+```
+
+`publicApi` appears only after the plugin's index is initialized and is removed on unload, so consumers must re-check it rather than caching it. The v1 surface exposes the current vault descriptor, effective integration settings, the projected external target list, duplicate-safe target resolution, canonical cross-vault wikilink formatting, target opening, and a `subscribe()` event stream (`catalog-changed`, `appearance-changed`).
+
+Integration is **off by default**. Targets are exposed only for vaults you explicitly select for the current source vault, and only indexed Markdown notes with their title and normalized aliases — never note content, snippets, searches, or absolute paths. `resolveTarget()` reports ambiguity instead of silently picking the first duplicate.
 
 ## Installation
 
