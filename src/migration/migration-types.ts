@@ -2,6 +2,7 @@ import type { IndexedNotePath } from './destination-paths';
 import type { IndexMutation } from '../indexer/index-mutations';
 
 export type MigrationMode = 'move' | 'copy' | 'relink';
+export type DestinationPolicy = 'create-only' | 'overwrite-reviewed';
 export type LinkKind = 'wikilink' | 'embed' | 'markdown';
 export type SkippedLinkReason =
   | 'already-cross-vault'
@@ -66,6 +67,8 @@ export interface MigrationPlan {
   destinationAbsolutePath: string | null;
   destinationRelativePath: string | null;
   destinationContent: string | null;
+  destinationPolicy?: DestinationPolicy;
+  destinationOriginalContent?: string | null;
   backlinkEdits: PlannedFileEdit[];
   outgoingLinksRewritten: number;
   backlinksRewritten: number;

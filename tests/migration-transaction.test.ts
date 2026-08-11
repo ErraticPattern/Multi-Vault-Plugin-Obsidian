@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   DestinationExistsError,
+  DestinationOwnershipError,
   executeMigrationPlan,
   MigrationExecutionError,
   StaleMigrationPlanError,
@@ -17,6 +18,7 @@ class MemoryIo implements MigrationIo {
   failTrash = false;
   failTrashAfterDelete = false;
   failRollbackPath: string | null = null;
+  concurrentDestinationWrite: string | null = null;
   private sourceWriteCount = 0;
 
   async destinationExists(absolutePath: string): Promise<boolean> {
@@ -26,14 +28,25 @@ class MemoryIo implements MigrationIo {
   async readDestination(absolutePath: string): Promise<string> {
     return this.destination.get(absolutePath) ?? '';
   }
-  async writeDestination(absolutePath: string, content: string): Promise<void> {
+  async writeDestination(absolutePath: string, content: string, _expectedOriginal: string | null): Promise<void> {
     this.log.push('write-destination');
     this.destination.set(absolutePath, this.failDestinationWrite ? 'concurrent destination' : content);
     if (this.failDestinationWrite) throw new Error('destination write failed');
   }
-  async removeDestination(absolutePath: string): Promise<void> {
-    this.log.push('remove-destination');
-    this.destination.delete(absolutePath);
+  async restoreDestination(
+    absolutePath: string,
+    writtenContent: string,
+    originalContent: string | null,
+  ): Promise<void> {
+    this.log.push('restore-destination');
+    if (this.destination.get(absolutePath) !== writtenContent) {
+      throw new DestinationOwnershipError(absolutePath);
+    }
+    if (originalContent === null) {
+      this.destination.delete(absolutePath);
+    } else {
+      this.destination.set(absolutePath, originalContent);
+    }
   }
   async readSourceFile(vaultPath: string): Promise<string> {
     this.log.push(`check-stale:${vaultPath}`);
@@ -48,7 +61,14 @@ class MemoryIo implements MigrationIo {
       throw new Error(`rollback failed: ${vaultPath}`);
     }
     this.source.set(vaultPath, content);
-    if (this.failSourceWriteAt === this.sourceWriteCount) throw new Error('backlink write failed');
+    if (this.failSourceWriteAt === this.sourceWriteCount) {
+      if (this.concurrentDestinationWrite !== null) {
+        for (const key of this.destination.keys()) {
+          this.destination.set(key, this.concurrentDestinationWrite);
+        }
+      }
+      throw new Error('backlink write failed');
+    }
   }
   async trashSourceFile(vaultPath: string): Promise<void> {
     this.log.push(`trash-source:${vaultPath}`);
@@ -229,5 +249,70 @@ describe('executeMigrationPlan rollback and stale protection', () => {
     await expect(executeMigrationPlan(plan('move'), io)).rejects.toBeDefined();
     expect([...io.source.keys(), ...io.destination.keys()].some((file) =>
       /\.(?:bak|backup|tmp)$/i.test(file))).toBe(false);
+  });
+});
+
+describe('executeMigrationPlan destination overwrite policy', () => {
+  it('refuses to overwrite an existing destination under create-only policy', async () => {
+    const io = readyIo();
+    io.destination.set('C:/target/Notes/Zerotier.md', 'existing');
+
+    await expect(executeMigrationPlan(plan('move'), io)).rejects.toBeInstanceOf(DestinationExistsError);
+
+    expect(io.destination.get('C:/target/Notes/Zerotier.md')).toBe('existing');
+  });
+
+  it('overwrites a reviewed destination that still matches the reviewed content', async () => {
+    const io = readyIo();
+    const overwritePlan = plan('move');
+    overwritePlan.destinationPolicy = 'overwrite-reviewed';
+    overwritePlan.destinationOriginalContent = 'existing';
+    io.destination.set(overwritePlan.destinationAbsolutePath!, 'existing');
+
+    await executeMigrationPlan(overwritePlan, io);
+
+    expect(io.destination.get(overwritePlan.destinationAbsolutePath!))
+      .toBe('Uses [[ideas::EEG]].');
+  });
+
+  it('rejects a reviewed overwrite when the destination changed after review', async () => {
+    const io = readyIo();
+    const overwritePlan = plan('move');
+    overwritePlan.destinationPolicy = 'overwrite-reviewed';
+    overwritePlan.destinationOriginalContent = 'existing';
+    io.destination.set(overwritePlan.destinationAbsolutePath!, 'changed after review');
+
+    await expect(executeMigrationPlan(overwritePlan, io)).rejects.toBeInstanceOf(StaleMigrationPlanError);
+
+    expect(io.destination.get(overwritePlan.destinationAbsolutePath!)).toBe('changed after review');
+    expect(io.log.some((entry) => entry.startsWith('write-'))).toBe(false);
+  });
+
+  it('restores the original destination content when an overwrite rolls back', async () => {
+    const io = readyIo();
+    io.failTrash = true;
+    const overwritePlan = plan('move');
+    overwritePlan.destinationPolicy = 'overwrite-reviewed';
+    overwritePlan.destinationOriginalContent = 'existing';
+    io.destination.set(overwritePlan.destinationAbsolutePath!, 'existing');
+
+    await expect(executeMigrationPlan(overwritePlan, io)).rejects.toBeInstanceOf(MigrationExecutionError);
+
+    expect(io.destination.get(overwritePlan.destinationAbsolutePath!)).toBe('existing');
+    expect(io.source.get('Notes/Index.md')).toBe('See [[Zerotier]].');
+    expect(io.source.has('Projects/Zerotier.md')).toBe(true);
+  });
+
+  it('reports a destination ownership error and preserves concurrent content when rollback finds it tampered with', async () => {
+    const io = readyIo();
+    io.failSourceWriteAt = 1;
+    io.concurrentDestinationWrite = 'tampered by another process';
+
+    const error = await executeMigrationPlan(plan('move'), io).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(MigrationExecutionError);
+    expect((error as MigrationExecutionError).rollbackErrors.some((item) =>
+      item instanceof DestinationOwnershipError)).toBe(true);
+    expect(io.destination.get('C:/target/Notes/Zerotier.md')).toBe('tampered by another process');
   });
 });

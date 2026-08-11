@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync } from 'node:fs';
-import { readFile, rm } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { TFile } from 'obsidian';
+import { DestinationOwnershipError, StaleMigrationPlanError } from '../src/migration/migration-transaction';
 import { ObsidianMigrationIo } from '../src/migration/obsidian-migration-io';
 
 const roots: string[] = [];
@@ -50,7 +51,7 @@ describe('ObsidianMigrationIo', () => {
     const destination = path.join(root, 'Nested', 'Source.md');
 
     expect(await io.destinationExists(destination)).toBe(false);
-    await io.writeDestination(destination, 'destination');
+    await io.writeDestination(destination, 'destination', null);
     expect(await io.destinationExists(destination)).toBe(true);
     expect(await io.readDestination(destination)).toBe('destination');
     expect(await io.readSourceFile(sourceFile.path)).toBe('original');
@@ -60,7 +61,7 @@ describe('ObsidianMigrationIo', () => {
     expect(trashed).toBe(sourceFile.path);
     await io.restoreSourceFile('Notes/Restored.md', 'restored');
     expect(files.get('Notes/Restored.md')).toBe('restored');
-    await io.removeDestination(destination);
+    await io.restoreDestination(destination, 'destination', null);
     expect(await io.destinationExists(destination)).toBe(false);
     await expect(readFile(`${destination}.bak`)).rejects.toThrow();
   });
@@ -77,5 +78,58 @@ describe('ObsidianMigrationIo', () => {
 
     await expect(io.readSourceFile('Missing.md')).rejects.toThrow(/not found/i);
     await expect(io.readSourceFile(image.path)).rejects.toThrow(/Markdown/i);
+  });
+
+  it('overwrites a destination only when the current content matches the expected original', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
+    roots.push(root);
+    const app = { vault: {}, fileManager: {} };
+    const io = new ObsidianMigrationIo(app as never);
+    const destination = path.join(root, 'Existing.md');
+    await writeFile(destination, 'existing', 'utf8');
+
+    await io.writeDestination(destination, 'updated', 'existing');
+
+    expect(await io.readDestination(destination)).toBe('updated');
+  });
+
+  it('rejects an overwrite when the destination no longer matches the expected original', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
+    roots.push(root);
+    const app = { vault: {}, fileManager: {} };
+    const io = new ObsidianMigrationIo(app as never);
+    const destination = path.join(root, 'Existing.md');
+    await writeFile(destination, 'changed after review', 'utf8');
+
+    await expect(io.writeDestination(destination, 'updated', 'existing'))
+      .rejects.toBeInstanceOf(StaleMigrationPlanError);
+    expect(await io.readDestination(destination)).toBe('changed after review');
+  });
+
+  it('restores the original content of an overwritten destination', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
+    roots.push(root);
+    const app = { vault: {}, fileManager: {} };
+    const io = new ObsidianMigrationIo(app as never);
+    const destination = path.join(root, 'Existing.md');
+    await writeFile(destination, 'existing', 'utf8');
+    await io.writeDestination(destination, 'updated', 'existing');
+
+    await io.restoreDestination(destination, 'updated', 'existing');
+
+    expect(await io.readDestination(destination)).toBe('existing');
+  });
+
+  it('refuses to restore a destination whose content no longer matches what was written', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
+    roots.push(root);
+    const app = { vault: {}, fileManager: {} };
+    const io = new ObsidianMigrationIo(app as never);
+    const destination = path.join(root, 'Existing.md');
+    await writeFile(destination, 'tampered by another process', 'utf8');
+
+    await expect(io.restoreDestination(destination, 'updated', 'existing'))
+      .rejects.toBeInstanceOf(DestinationOwnershipError);
+    expect(await io.readDestination(destination)).toBe('tampered by another process');
   });
 });

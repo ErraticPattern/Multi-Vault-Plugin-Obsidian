@@ -1,7 +1,7 @@
 import { TFile, type App } from 'obsidian';
-import { access, mkdir, open, readFile, rm } from 'fs/promises';
+import { access, mkdir, open, readFile, rm, writeFile } from 'fs/promises';
 import * as path from 'path';
-import type { MigrationIo } from './migration-transaction';
+import { DestinationOwnershipError, StaleMigrationPlanError, type MigrationIo } from './migration-transaction';
 
 export class ObsidianMigrationIo implements MigrationIo {
   constructor(private readonly app: App) {}
@@ -19,23 +19,48 @@ export class ObsidianMigrationIo implements MigrationIo {
     return readFile(absolutePath, 'utf8');
   }
 
-  async writeDestination(absolutePath: string, content: string): Promise<void> {
+  async writeDestination(
+    absolutePath: string,
+    content: string,
+    expectedOriginal: string | null,
+  ): Promise<void> {
     await mkdir(path.dirname(absolutePath), { recursive: true });
-    const handle = await open(absolutePath, 'wx');
-    let closed = false;
-    try {
-      await handle.writeFile(content, { encoding: 'utf8' });
-      await handle.close();
-      closed = true;
-    } catch (error: unknown) {
-      if (!closed) await handle.close().catch(() => undefined);
-      await rm(absolutePath, { force: true }).catch(() => undefined);
-      throw error;
+    if (expectedOriginal === null) {
+      const handle = await open(absolutePath, 'wx');
+      let closed = false;
+      try {
+        await handle.writeFile(content, { encoding: 'utf8' });
+        await handle.close();
+        closed = true;
+      } catch (error: unknown) {
+        if (!closed) await handle.close().catch(() => undefined);
+        await rm(absolutePath, { force: true }).catch(() => undefined);
+        throw error;
+      }
+      return;
     }
+
+    const current = await readFile(absolutePath, 'utf8').catch(() => null);
+    if (current !== expectedOriginal) {
+      throw new StaleMigrationPlanError(absolutePath);
+    }
+    await writeFile(absolutePath, content, 'utf8');
   }
 
-  async removeDestination(absolutePath: string): Promise<void> {
-    await rm(absolutePath, { force: true });
+  async restoreDestination(
+    absolutePath: string,
+    writtenContent: string,
+    originalContent: string | null,
+  ): Promise<void> {
+    const current = await readFile(absolutePath, 'utf8').catch(() => null);
+    if (current !== writtenContent) {
+      throw new DestinationOwnershipError(absolutePath);
+    }
+    if (originalContent === null) {
+      await rm(absolutePath, { force: true });
+      return;
+    }
+    await writeFile(absolutePath, originalContent, 'utf8');
   }
 
   async readSourceFile(vaultPath: string): Promise<string> {

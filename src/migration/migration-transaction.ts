@@ -3,8 +3,16 @@ import type { MigrationPlan } from './migration-types';
 export interface MigrationIo {
   destinationExists(absolutePath: string): Promise<boolean>;
   readDestination(absolutePath: string): Promise<string>;
-  writeDestination(absolutePath: string, content: string): Promise<void>;
-  removeDestination(absolutePath: string): Promise<void>;
+  writeDestination(
+    absolutePath: string,
+    content: string,
+    expectedOriginal: string | null,
+  ): Promise<void>;
+  restoreDestination(
+    absolutePath: string,
+    writtenContent: string,
+    originalContent: string | null,
+  ): Promise<void>;
   readSourceFile(vaultPath: string): Promise<string>;
   writeSourceFile(vaultPath: string, content: string): Promise<void>;
   trashSourceFile(vaultPath: string): Promise<void>;
@@ -28,6 +36,13 @@ export class StaleMigrationPlanError extends Error {
   constructor(vaultPath: string) {
     super(`A file changed after migration review: ${vaultPath}`);
     this.name = 'StaleMigrationPlanError';
+  }
+}
+
+export class DestinationOwnershipError extends Error {
+  constructor(destination: string) {
+    super(`Destination changed unexpectedly during rollback: ${destination}`);
+    this.name = 'DestinationOwnershipError';
   }
 }
 
@@ -60,6 +75,26 @@ async function verifyUnchanged(
   if (current !== expected) throw new StaleMigrationPlanError(vaultPath);
 }
 
+async function verifyDestination(io: MigrationIo, plan: MigrationPlan): Promise<string | null> {
+  if (!plan.destinationAbsolutePath) return null;
+
+  const original = plan.destinationOriginalContent ?? null;
+  const policy = plan.destinationPolicy ?? 'create-only';
+  const exists = await io.destinationExists(plan.destinationAbsolutePath);
+  if (policy === 'create-only' && exists) {
+    throw new DestinationExistsError(plan.destinationAbsolutePath);
+  }
+  if (policy === 'overwrite-reviewed') {
+    if (!exists || await io.readDestination(plan.destinationAbsolutePath) !== original) {
+      throw new StaleMigrationPlanError(plan.destinationAbsolutePath);
+    }
+  }
+  if (plan.destinationContent === null) {
+    throw new Error('Destination content is missing from move/copy plan');
+  }
+  return original;
+}
+
 export async function executeMigrationPlan(
   plan: MigrationPlan,
   io: MigrationIo,
@@ -69,20 +104,20 @@ export async function executeMigrationPlan(
     await verifyUnchanged(io, edit.path, edit.originalContent);
   }
 
-  if (plan.destinationAbsolutePath && await io.destinationExists(plan.destinationAbsolutePath)) {
-    throw new DestinationExistsError(plan.destinationAbsolutePath);
-  }
-  if (plan.destinationAbsolutePath && plan.destinationContent === null) {
-    throw new Error('Destination content is missing from move/copy plan');
-  }
+  const destinationOriginal = await verifyDestination(io, plan);
 
-  let destinationWritten = false;
+  let destinationWriteAttempted = false;
   let sourceTrashAttempted = false;
   const attemptedBacklinks: typeof plan.backlinkEdits = [];
   try {
     if (plan.destinationAbsolutePath) {
-      await io.writeDestination(plan.destinationAbsolutePath, plan.destinationContent!);
-      destinationWritten = true;
+      destinationWriteAttempted = true;
+      const policy = plan.destinationPolicy ?? 'create-only';
+      await io.writeDestination(
+        plan.destinationAbsolutePath,
+        plan.destinationContent!,
+        policy === 'overwrite-reviewed' ? destinationOriginal : null,
+      );
     }
 
     for (const edit of plan.backlinkEdits) {
@@ -114,9 +149,13 @@ export async function executeMigrationPlan(
         rollbackErrors.push(asError(rollbackError));
       }
     }
-    if (destinationWritten && plan.destinationAbsolutePath) {
+    if (destinationWriteAttempted && plan.destinationAbsolutePath) {
       try {
-        await io.removeDestination(plan.destinationAbsolutePath);
+        await io.restoreDestination(
+          plan.destinationAbsolutePath,
+          plan.destinationContent!,
+          destinationOriginal,
+        );
       } catch (rollbackError: unknown) {
         rollbackErrors.push(asError(rollbackError));
       }

@@ -18,11 +18,21 @@ class FixtureIo implements MigrationIo {
     try { await readFile(absolutePath); return true; } catch { return false; }
   }
   async readDestination(absolutePath: string): Promise<string> { return readFile(absolutePath, 'utf8'); }
-  async writeDestination(absolutePath: string, content: string): Promise<void> {
+  async writeDestination(absolutePath: string, content: string, expectedOriginal: string | null): Promise<void> {
     await mkdir(path.dirname(absolutePath), { recursive: true });
-    await writeFile(absolutePath, content, { flag: 'wx' });
+    if (expectedOriginal === null) {
+      await writeFile(absolutePath, content, { flag: 'wx' });
+      return;
+    }
+    await writeFile(absolutePath, content, 'utf8');
   }
-  async removeDestination(absolutePath: string): Promise<void> { await rm(absolutePath, { force: true }); }
+  async restoreDestination(absolutePath: string, _writtenContent: string, originalContent: string | null): Promise<void> {
+    if (originalContent === null) {
+      await rm(absolutePath, { force: true });
+      return;
+    }
+    await writeFile(absolutePath, originalContent, 'utf8');
+  }
   async readSourceFile(vaultPath: string): Promise<string> {
     return readFile(path.join(this.sourceRoot, vaultPath), 'utf8');
   }

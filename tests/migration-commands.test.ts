@@ -37,7 +37,10 @@ class ControllerIo implements MigrationIo {
   async destinationExists(path: string) { return this.destination.has(path); }
   async readDestination(path: string) { return this.destination.get(path) ?? ''; }
   async writeDestination(path: string, content: string) { this.destination.set(path, content); }
-  async removeDestination(path: string) { this.destination.delete(path); }
+  async restoreDestination(path: string, _writtenContent: string, originalContent: string | null) {
+    if (originalContent === null) this.destination.delete(path);
+    else this.destination.set(path, originalContent);
+  }
   async readSourceFile(path: string) { return this.source.get(path)!; }
   async writeSourceFile(path: string, content: string) { this.source.set(path, content); }
   async trashSourceFile(path: string) { this.source.delete(path); }
