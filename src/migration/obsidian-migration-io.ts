@@ -41,13 +41,13 @@ export class ObsidianMigrationIo implements MigrationIo {
       return;
     }
 
-    const current = await readFile(absolutePath, 'utf8').catch(() => null);
-    if (current !== expectedOriginal) {
-      throw new StaleMigrationPlanError(absolutePath);
-    }
     const stagePath = `${absolutePath}.mvp-stage-${randomBytes(8).toString('hex')}`;
     try {
       await writeFile(stagePath, content, 'utf8');
+      const current = await readFile(absolutePath, 'utf8').catch(() => null);
+      if (current !== expectedOriginal) {
+        throw new StaleMigrationPlanError(absolutePath);
+      }
       await rename(stagePath, absolutePath);
     } catch (error: unknown) {
       await rm(stagePath, { force: true }).catch(() => undefined);

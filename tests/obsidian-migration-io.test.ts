@@ -112,6 +112,29 @@ describe('ObsidianMigrationIo', () => {
     expect(await io.readDestination(destination)).toBe('changed after review');
   });
 
+  it('rejects a reviewed overwrite when the destination changes during staging and leaves no stage artifact', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
+    roots.push(root);
+    const app = { vault: {}, fileManager: {} };
+    const io = new ObsidianMigrationIo(app as never);
+    const destination = path.join(root, 'Existing.md');
+    await writeFile(destination, 'existing', 'utf8');
+
+    const mockedWriteFile = vi.mocked(writeFileViaProdSpecifier);
+    mockedWriteFile.mockImplementationOnce(async (filePath, data, encoding) => {
+      await writeFile(filePath as string, String(data), encoding as BufferEncoding);
+      if (typeof filePath === 'string' && filePath.includes('.mvp-stage-')) {
+        await writeFile(destination, 'changed during staging', 'utf8');
+      }
+    });
+
+    await expect(io.writeDestination(destination, 'updated', 'existing'))
+      .rejects.toBeInstanceOf(StaleMigrationPlanError);
+
+    expect(await io.readDestination(destination)).toBe('changed during staging');
+    expect(await readdir(root)).toEqual(['Existing.md']);
+  });
+
   it('restores the original content of an overwritten destination', async () => {
     const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
     roots.push(root);
