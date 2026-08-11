@@ -8,6 +8,9 @@ import type { SharedSettingsPatch } from './shared-settings/shared-settings-stor
 import type { VirtualLinkColorMode } from './shared-settings/shared-settings-types';
 import { normalizeExistingPathKey, normalizePathDisplay } from './shared-settings/path-identity';
 
+const VIRTUAL_LINKER_PLUGIN_ID = 'virtual-linker';
+const VIRTUAL_LINKER_REPOSITORY_URL = 'https://github.com/ErraticPattern/obsidian-virtual-linker';
+
 // Loose shape for manually rendering 1.13-style setting definitions on 1.12.x.
 type ManualRenderItem = {
   name?: string | DocumentFragment;
@@ -280,6 +283,26 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
             }));
         },
       })),
+    ];
+
+    const virtualLinkerInstalled = this.isVirtualLinkerInstalled();
+    const virtualLinkerItems: SettingGroupItem[] = [
+      {
+        name: 'Virtual Linker plugin',
+        // These settings only describe what a separate plugin should do. Without it
+        // they are inert, so say so plainly instead of letting them look broken.
+        desc: virtualLinkerInstalled
+          ? 'Detected. The settings below control how the Virtual Linker links notes across vaults.'
+          : 'Not detected. These settings are still stored and shared with your other vaults, but nothing happens until the Virtual Linker plugin is installed and enabled.',
+        render: (setting: Setting) => {
+          if (virtualLinkerInstalled) return;
+          setting.addButton((button) => button
+            .setButtonText('Get the plugin')
+            .onClick(() => {
+              window.open(VIRTUAL_LINKER_REPOSITORY_URL, '_blank');
+            }));
+        },
+      },
       {
         name: 'Enable Virtual Linker integration',
         desc: 'Expose explicitly selected external vault targets through the optional integration.',
@@ -382,6 +405,13 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
         type: 'group',
         heading: 'Shared configuration',
         items: sharedConfigurationItems,
+      },
+      {
+        type: 'group',
+        heading: virtualLinkerInstalled
+          ? 'Cross-vault virtual links (Virtual Linker)'
+          : 'Cross-vault virtual links (requires Virtual Linker)',
+        items: virtualLinkerItems,
       },
       {
         type: 'group',
@@ -610,6 +640,15 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
         ]
       }
     ];
+  }
+
+  /** Obsidian does not expose the plugin registry in its typings, so probe it structurally. */
+  private isVirtualLinkerInstalled(): boolean {
+    const registry = (this.app as unknown as {
+      plugins?: { plugins?: Record<string, unknown>; enabledPlugins?: Set<string> };
+    }).plugins;
+    return registry?.plugins?.[VIRTUAL_LINKER_PLUGIN_ID] !== undefined
+      || registry?.enabledPlugins?.has(VIRTUAL_LINKER_PLUGIN_ID) === true;
   }
 
   private ensureVirtualLinks(): NonNullable<typeof this.plugin.settings.virtualLinks> {

@@ -82,7 +82,7 @@ Go to **Settings > Multi-Vault Navigator** to configure:
 - **Max Preview Characters**: Length of text snippets saved for search indexing.
 - **Global Exclude Patterns**: Comma-separated list of folder/file names to ignore across all vaults (e.g., `Private, secrets`).
 - **Shared configuration**: Enable machine-wide shared settings, exclude individual vaults from participating, sync immediately, or inspect status. See [Shared configuration across vaults](#shared-configuration-across-vaults).
-- **Virtual Linker integration**: Enable the optional cross-vault integration, choose which vaults the current vault may link into, and pick the link style (Off, Muted text tint, Colored underline, Soft color pill) and intensity (10–90, default 55).
+- **Cross-vault virtual links**: A separate settings group holding everything the [Virtual Linker](https://github.com/ErraticPattern/obsidian-virtual-linker) provides: enabling the integration, choosing which vaults the current vault may link into, and the link style (Off, Muted text tint, Colored underline, Soft color pill) and intensity (10–90, default 55). The group states whether the Virtual Linker is installed; without it these settings are stored and shared but have no effect.
 
 ---
 

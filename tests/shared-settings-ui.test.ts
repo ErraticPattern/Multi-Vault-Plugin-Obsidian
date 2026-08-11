@@ -268,15 +268,23 @@ describe('shared settings controls', () => {
     } as unknown as VaultRegistry;
     const tab = new MultiVaultSettingsTab(new App(), plugin, registry, {} as Indexer);
     const definitions = tab.getSettingDefinitions();
-    const sharedGroup = definitions.find((definition) => (
-      'type' in definition && definition.type === 'group' && definition.heading === 'Shared configuration'
+    // Virtual Linker controls live in their own group, so a user without that
+    // plugin can see at a glance which settings depend on it.
+    const virtualLinkerGroup = definitions.find((definition) => (
+      'type' in definition
+      && definition.type === 'group'
+      && typeof definition.heading === 'string'
+      && definition.heading.startsWith('Cross-vault virtual links')
     ));
-    if (!sharedGroup || !('items' in sharedGroup)) throw new Error('Shared configuration group is missing.');
+    if (!virtualLinkerGroup || !('items' in virtualLinkerGroup)) {
+      throw new Error('Cross-vault virtual links group is missing.');
+    }
 
     type RenderItem = { name?: string | DocumentFragment; render?: (setting: unknown) => unknown };
-    const sharedItems = (sharedGroup.items ?? []) as RenderItem[];
-    const modeItem = sharedItems.find((item) => item.name === 'Virtual-link color mode');
-    const intensityItem = sharedItems.find((item) => item.name === 'Virtual-link color intensity');
+    const virtualLinkerItems = (virtualLinkerGroup.items ?? []) as RenderItem[];
+    const modeItem = virtualLinkerItems.find((item) => item.name === 'Virtual-link color mode');
+    const intensityItem = virtualLinkerItems.find((item) => item.name === 'Virtual-link color intensity');
+    expect(virtualLinkerItems[0].name).toBe('Virtual Linker plugin');
     const modeContainer = new FakeElement();
     const modeSetting = new Setting(modeContainer);
     modeItem?.render?.(modeSetting);
