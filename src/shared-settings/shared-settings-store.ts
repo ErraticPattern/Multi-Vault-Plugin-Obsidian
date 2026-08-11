@@ -40,7 +40,7 @@ const VALID_COLOR_MODES: readonly VirtualLinkColorMode[] = [
   'soft-pill',
 ];
 
-let processPatchSequence = 0n;
+const processWriterPatchSequences = new Map<string, bigint>();
 
 export type SharedSettingsPatch =
   | { kind: 'set-enabled'; enabled: boolean }
@@ -61,6 +61,7 @@ export interface SharedSettingsPatchEnvelope {
   schemaVersion: 1;
   id: string;
   writerInstanceId: string;
+  logicalClock: number;
   createdAt: string;
   patch: SharedSettingsPatch;
 }
@@ -321,7 +322,7 @@ function validateEnvelope(value: unknown, expectedId: string): asserts value is 
   const envelope = requireRecord(value, 'patch envelope', invalidPatch);
   requireOnlyFields(
     envelope,
-    ['schemaVersion', 'id', 'writerInstanceId', 'createdAt', 'patch'],
+    ['schemaVersion', 'id', 'writerInstanceId', 'logicalClock', 'createdAt', 'patch'],
     'patch envelope',
     invalidPatch,
   );
@@ -335,6 +336,9 @@ function validateEnvelope(value: unknown, expectedId: string): asserts value is 
   if (!PATCH_ID_PATTERN.test(envelope.id)) invalidPatch('patch envelope.id has an invalid format.');
   if (envelope.id !== expectedId) invalidPatch('patch envelope.id must match its filename.');
   requireNonEmptyString(envelope.writerInstanceId, 'patch envelope.writerInstanceId', invalidPatch);
+  if (!Number.isSafeInteger(envelope.logicalClock) || (envelope.logicalClock as number) < 1) {
+    invalidPatch('patch envelope.logicalClock must be a positive safe integer.');
+  }
   requireNonEmptyString(envelope.createdAt, 'patch envelope.createdAt', invalidPatch);
   if (Number.isNaN(Date.parse(envelope.createdAt))) invalidPatch('patch envelope.createdAt must be a valid timestamp.');
   validatePatch(envelope.patch);
@@ -362,10 +366,8 @@ function toggleId(ids: readonly string[], id: string, included: boolean): string
   return ids.filter((candidate) => candidate !== id);
 }
 
-function findVaultIndex(manifest: SharedSettingsManifest, vaultId: string): number {
-  const index = manifest.vaults.findIndex((vault) => vault.id === vaultId);
-  if (index < 0) invalidPatch(`patch references unknown vault ${JSON.stringify(vaultId)}.`);
-  return index;
+function hasVault(manifest: SharedSettingsManifest, vaultId: string): boolean {
+  return manifest.vaults.some((vault) => vault.id === vaultId);
 }
 
 function replaceVault(
@@ -373,7 +375,8 @@ function replaceVault(
   vaultId: string,
   update: (vault: SharedVaultRecord) => SharedVaultRecord,
 ): SharedVaultRecord[] {
-  const index = findVaultIndex(manifest, vaultId);
+  const index = manifest.vaults.findIndex((vault) => vault.id === vaultId);
+  if (index < 0) return manifest.vaults;
   return manifest.vaults.map((vault, candidateIndex) => candidateIndex === index ? update(vault) : vault);
 }
 
@@ -382,7 +385,7 @@ function applyPatch(manifest: SharedSettingsManifest, patch: SharedSettingsPatch
     case 'set-enabled':
       return { ...manifest, enabled: patch.enabled };
     case 'set-vault-excluded':
-      findVaultIndex(manifest, patch.vaultId);
+      if (!hasVault(manifest, patch.vaultId)) return manifest;
       return { ...manifest, excludedVaultIds: toggleId(manifest.excludedVaultIds, patch.vaultId, patch.excluded) };
     case 'upsert-vault': {
       const existingIndex = manifest.vaults.findIndex((vault) => vault.id === patch.vault.id);
@@ -394,7 +397,7 @@ function applyPatch(manifest: SharedSettingsManifest, patch: SharedSettingsPatch
       return { ...manifest, vaults };
     }
     case 'remove-vault': {
-      findVaultIndex(manifest, patch.vaultId);
+      if (!hasVault(manifest, patch.vaultId)) return manifest;
       const targetVaultIdsBySource = Object.fromEntries(
         Object.entries(manifest.virtualLinks.targetVaultIdsBySource)
           .filter(([sourceId]) => sourceId !== patch.vaultId)
@@ -455,7 +458,7 @@ function applyPatch(manifest: SharedSettingsManifest, patch: SharedSettingsPatch
     case 'set-virtual-links-enabled':
       return { ...manifest, virtualLinks: { ...manifest.virtualLinks, enabled: patch.enabled } };
     case 'set-virtual-link-source-excluded':
-      findVaultIndex(manifest, patch.vaultId);
+      if (!hasVault(manifest, patch.vaultId)) return manifest;
       return {
         ...manifest,
         virtualLinks: {
@@ -467,19 +470,20 @@ function applyPatch(manifest: SharedSettingsManifest, patch: SharedSettingsPatch
           ),
         },
       };
-    case 'set-virtual-link-targets':
-      findVaultIndex(manifest, patch.sourceVaultId);
-      for (const targetVaultId of patch.targetVaultIds) findVaultIndex(manifest, targetVaultId);
+    case 'set-virtual-link-targets': {
+      if (!hasVault(manifest, patch.sourceVaultId)) return manifest;
+      const targetVaultIds = patch.targetVaultIds.filter((vaultId) => hasVault(manifest, vaultId));
       return {
         ...manifest,
         virtualLinks: {
           ...manifest.virtualLinks,
           targetVaultIdsBySource: {
             ...manifest.virtualLinks.targetVaultIdsBySource,
-            [patch.sourceVaultId]: [...patch.targetVaultIds],
+            [patch.sourceVaultId]: targetVaultIds,
           },
         },
       };
+    }
     case 'set-virtual-link-style':
       return {
         ...manifest,
@@ -550,6 +554,21 @@ async function cleanupPending(filePath: string): Promise<void> {
   }
 }
 
+function comparePatchEnvelopes(
+  left: SharedSettingsPatchEnvelope,
+  right: SharedSettingsPatchEnvelope,
+): number {
+  if (left.logicalClock !== right.logicalClock) {
+    return left.logicalClock < right.logicalClock ? -1 : 1;
+  }
+  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+}
+
+interface SharedSettingsJournalState {
+  manifest: SharedSettingsManifest;
+  envelopes: SharedSettingsPatchEnvelope[];
+}
+
 export class SharedSettingsStore {
   readonly applicationDataRoot: string;
   readonly directory: string;
@@ -572,42 +591,7 @@ export class SharedSettingsStore {
   }
 
   async read(): Promise<SharedSettingsManifest | null> {
-    const seed = await this.readSeed();
-    if (!seed) return null;
-
-    let entries;
-    try {
-      entries = await readdir(this.patchesDirectory, { withFileTypes: true });
-    } catch (error) {
-      if (isNodeError(error, 'ENOENT')) return seed;
-      throw error;
-    }
-
-    const patchFileNames = entries
-      .filter((entry) => entry.isFile() && entry.name.endsWith('.json') && !entry.name.startsWith('.pending-'))
-      .map((entry) => entry.name)
-      .sort();
-
-    let result = seed;
-    let revision = 0;
-    for (const fileName of patchFileNames) {
-      const id = fileName.slice(0, -'.json'.length);
-      const parsed = await parseJsonFile(
-        path.join(this.patchesDirectory, fileName),
-        `Shared settings patch ${JSON.stringify(boundedFileName(fileName))}`,
-      );
-      validateEnvelope(parsed, id);
-      result = {
-        ...applyPatch(result, parsed.patch),
-        revision: revision + 1,
-        updatedAt: parsed.createdAt,
-        writerInstanceId: parsed.writerInstanceId,
-      };
-      revision += 1;
-      validateManifest(result, revision);
-    }
-
-    return result;
+    return (await this.readJournal())?.manifest ?? null;
   }
 
   async initialize(seed: SharedSettingsProjection, writerInstanceId: string): Promise<SharedSettingsManifest> {
@@ -665,24 +649,34 @@ export class SharedSettingsStore {
   ): Promise<SharedSettingsManifest> {
     requireNonEmptyString(writerInstanceId, 'writerInstanceId', invalidPatch);
     validatePatch(patch);
-    const current = await this.read();
-    if (!current) {
+    const journal = await this.readJournal();
+    if (!journal) {
       throw new SharedSettingsNotInitializedError(
         `Shared settings seed does not exist at ${this.seedPath}.`,
       );
     }
 
-    const preview = applyPatch(current, patch);
-    validateManifest(preview, current.revision);
+    const preview = applyPatch(journal.manifest, patch);
+    validateManifest(preview, journal.manifest.revision);
+
+    const maxObservedClock = journal.envelopes.reduce(
+      (maximum, envelope) => Math.max(maximum, envelope.logicalClock),
+      0,
+    );
+    if (maxObservedClock >= Number.MAX_SAFE_INTEGER) {
+      invalidPatch('patch logical clock is exhausted.');
+    }
+    const logicalClock = maxObservedClock + 1;
 
     await mkdir(this.patchesDirectory, { recursive: true });
     const createdAt = this.now();
     if (Number.isNaN(createdAt.getTime())) invalidPatch('patch createdAt must be a valid timestamp.');
-    const id = this.createPatchId(createdAt, writerInstanceId);
+    const id = this.createPatchId(logicalClock, writerInstanceId);
     const envelope: SharedSettingsPatchEnvelope = {
       schemaVersion: SHARED_SETTINGS_SCHEMA_VERSION,
       id,
       writerInstanceId,
+      logicalClock,
       createdAt: createdAt.toISOString(),
       patch,
     };
@@ -714,6 +708,50 @@ export class SharedSettingsStore {
     return result;
   }
 
+  private async readJournal(): Promise<SharedSettingsJournalState | null> {
+    const seed = await this.readSeed();
+    if (!seed) return null;
+
+    const envelopes = await this.readPatchEnvelopes();
+    let manifest = seed;
+    for (const [index, envelope] of envelopes.entries()) {
+      manifest = {
+        ...applyPatch(manifest, envelope.patch),
+        revision: index + 1,
+        updatedAt: envelope.createdAt,
+        writerInstanceId: envelope.writerInstanceId,
+      };
+      validateManifest(manifest, index + 1);
+    }
+    return { manifest, envelopes };
+  }
+
+  private async readPatchEnvelopes(): Promise<SharedSettingsPatchEnvelope[]> {
+    let entries;
+    try {
+      entries = await readdir(this.patchesDirectory, { withFileTypes: true });
+    } catch (error) {
+      if (isNodeError(error, 'ENOENT')) return [];
+      throw error;
+    }
+
+    const patchFileNames = entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json') && !entry.name.startsWith('.pending-'))
+      .map((entry) => entry.name)
+      .sort();
+    const envelopes: SharedSettingsPatchEnvelope[] = [];
+    for (const fileName of patchFileNames) {
+      const id = fileName.slice(0, -'.json'.length);
+      const parsed = await parseJsonFile(
+        path.join(this.patchesDirectory, fileName),
+        `Shared settings patch ${JSON.stringify(boundedFileName(fileName))}`,
+      );
+      validateEnvelope(parsed, id);
+      envelopes.push(parsed);
+    }
+    return envelopes.sort(comparePatchEnvelopes);
+  }
+
   private async readSeed(): Promise<SharedSettingsManifest | null> {
     let parsed: unknown;
     try {
@@ -736,12 +774,13 @@ export class SharedSettingsStore {
     );
   }
 
-  private createPatchId(createdAt: Date, writerInstanceId: string): string {
-    processPatchSequence += 1n;
-    const milliseconds = String(createdAt.getTime()).padStart(16, '0');
+  private createPatchId(logicalClock: number, writerInstanceId: string): string {
+    const nextSequence = (processWriterPatchSequences.get(writerInstanceId) ?? 0n) + 1n;
+    processWriterPatchSequences.set(writerInstanceId, nextSequence);
+    const clock = String(logicalClock).padStart(16, '0');
     const writer = createHash('sha256').update(writerInstanceId).digest('hex').slice(0, 16);
-    const sequence = processPatchSequence.toString(16).padStart(12, '0').slice(-12);
+    const sequence = nextSequence.toString(16).padStart(12, '0').slice(-12);
     const random = this.randomBytes(16).toString('hex');
-    return `${milliseconds}-${writer}-${sequence}-${random}`;
+    return `${clock}-${writer}-${sequence}-${random}`;
   }
 }

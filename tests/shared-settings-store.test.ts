@@ -89,6 +89,7 @@ function manualEnvelope(
     schemaVersion: 1,
     id,
     writerInstanceId: 'manual-writer',
+    logicalClock: 1,
     createdAt: '2026-08-10T12:00:00.000Z',
     patch,
     ...overrides,
@@ -243,7 +244,115 @@ describe('SharedSettingsStore immutable patch journal', () => {
     expect(await patchFiles(root)).toHaveLength(2);
   });
 
-  it('resolves same-field concurrent edits deterministically by filename order', async () => {
+  it('orders observed dependent patches by logical clock despite wall-clock rollback', async () => {
+    const times = [
+      new Date('2026-08-10T12:00:00.000Z'),
+      new Date('2026-08-10T13:00:00.000Z'),
+      new Date('2026-08-10T11:00:00.000Z'),
+    ];
+    const { root, store } = await createStore({ now: () => times.shift()! });
+    await store.initialize(createProjection(), 'initializer');
+
+    await store.patch({
+      kind: 'upsert-vault',
+      vault: {
+        id: 'research',
+        pathKey: 'c:/vaults/research',
+        path: 'C:/Vaults/Research',
+        name: 'Research',
+        enabled: true,
+      },
+    }, 'upsert-writer');
+    await store.patch({ kind: 'set-vault-color', vaultId: 'research', color: '#123456' }, 'color-writer');
+
+    const files = await patchFiles(root);
+    const envelopes = await Promise.all(files.map(async (fileName) => (
+      JSON.parse(await readFile(path.join(patchesPath(root), fileName), 'utf8')) as SharedSettingsPatchEnvelope
+    )));
+    expect(envelopes.map((envelope) => envelope.logicalClock).sort((a, b) => a - b)).toEqual([1, 2]);
+    expect(envelopes.find((envelope) => envelope.patch.kind === 'set-vault-color')?.createdAt)
+      .toBe('2026-08-10T11:00:00.000Z');
+    await expect(store.read()).resolves.toMatchObject({
+      revision: 2,
+      vaults: expect.arrayContaining([expect.objectContaining({ id: 'research', color: '#123456' })]),
+    });
+  });
+
+  it('keeps concurrent remove and vault edits total in both deterministic orderings', async () => {
+    const cases = [
+      { removeWriter: 'remove-last', setWriter: 'set-last', expectedFirstKind: 'remove-vault' },
+      { removeWriter: 'remove-first', setWriter: 'set-first', expectedFirstKind: 'set-vault-color' },
+    ] as const;
+
+    for (const race of cases) {
+      const bothReady = deferred();
+      const release = deferred();
+      let readyCount = 0;
+      const beforePublishPatch = async () => {
+        readyCount += 1;
+        if (readyCount === 2) bothReady.resolve();
+        await release.promise;
+      };
+      const { root, store: storeA } = await createStore({ beforePublishPatch });
+      const storeB = new SharedSettingsStore(root, { beforePublishPatch });
+      await storeA.initialize(createProjection(), 'initializer');
+
+      const removal = storeA.patch({ kind: 'remove-vault', vaultId: 'medicine' }, race.removeWriter);
+      const edit = storeB.patch(
+        { kind: 'set-vault-color', vaultId: 'medicine', color: '#123456' },
+        race.setWriter,
+      );
+      await bothReady.promise;
+      release.resolve();
+      await Promise.all([removal, edit]);
+
+      const concurrentFiles = await patchFiles(root);
+      const concurrentEnvelopes = await Promise.all(concurrentFiles.map(async (fileName) => (
+        JSON.parse(await readFile(path.join(patchesPath(root), fileName), 'utf8')) as SharedSettingsPatchEnvelope
+      )));
+      concurrentEnvelopes.sort((left, right) => (
+        left.logicalClock - right.logicalClock || left.id.localeCompare(right.id)
+      ));
+      expect(concurrentEnvelopes.map((envelope) => envelope.logicalClock)).toEqual([1, 1]);
+      expect(concurrentEnvelopes[0].patch.kind).toBe(race.expectedFirstKind);
+      await expect(storeA.read()).resolves.toMatchObject({ revision: 2 });
+      expect((await storeA.read())?.vaults.some((vault) => vault.id === 'medicine')).toBe(false);
+
+      await storeA.patch({ kind: 'set-enabled', enabled: false }, 'recovery-writer');
+      await expect(storeB.read()).resolves.toMatchObject({ revision: 3, enabled: false });
+      expect(await patchFiles(root)).toHaveLength(3);
+    }
+  });
+
+  it('treats patches referencing concurrently removed vaults as no-ops or filtered integrations', async () => {
+    const { store } = await createStore();
+    await store.initialize(createProjection(), 'initializer');
+    await store.patch({ kind: 'remove-vault', vaultId: 'medicine' }, 'remover');
+
+    const missingVaultPatches: SharedSettingsPatch[] = [
+      { kind: 'remove-vault', vaultId: 'medicine' },
+      { kind: 'set-vault-excluded', vaultId: 'medicine', excluded: true },
+      { kind: 'set-vault-color', vaultId: 'medicine', color: '#123456' },
+      { kind: 'set-vault-icon', vaultId: 'medicine', icon: 'pill' },
+      { kind: 'set-vault-enabled', vaultId: 'medicine', enabled: false },
+      { kind: 'set-vault-patterns', vaultId: 'medicine', include: ['Notes'], exclude: [] },
+      { kind: 'set-virtual-link-source-excluded', vaultId: 'medicine', excluded: true },
+      { kind: 'set-virtual-link-targets', sourceVaultId: 'medicine', targetVaultIds: ['ideas'] },
+      { kind: 'set-virtual-link-targets', sourceVaultId: 'ideas', targetVaultIds: ['medicine'] },
+    ];
+    for (const patch of missingVaultPatches) await store.patch(patch, 'concurrent-peer');
+
+    await expect(store.read()).resolves.toMatchObject({
+      revision: missingVaultPatches.length + 1,
+      excludedVaultIds: [],
+      virtualLinks: {
+        excludedSourceVaultIds: [],
+        targetVaultIdsBySource: { ideas: [] },
+      },
+    });
+  });
+
+  it('resolves same-field concurrent edits deterministically by logical clock and ID', async () => {
     const fixedNow = () => new Date('2026-08-10T12:00:00.000Z');
     const { root, store: storeA } = await createStore({ now: fixedNow });
     const storeB = new SharedSettingsStore(root, { now: fixedNow });
@@ -407,9 +516,14 @@ describe('SharedSettingsStore immutable patch journal', () => {
     await writeFile(
       path.join(patchesPath(root), `${id}.json`),
       JSON.stringify(manualEnvelope(id, {
-        kind: 'set-virtual-link-targets',
-        sourceVaultId: 'ideas',
-        targetVaultIds: ['unknown-vault'],
+        kind: 'upsert-vault',
+        vault: {
+          id: 'duplicate-path',
+          pathKey: 'c:/vaults/ideas',
+          path: 'C:/Vaults/Ideas',
+          name: 'Duplicate Ideas',
+          enabled: true,
+        },
       })),
       'utf8',
     );
