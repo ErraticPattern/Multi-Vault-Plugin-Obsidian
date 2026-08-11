@@ -2,9 +2,17 @@ import { App, Modal, Notice, Setting } from 'obsidian';
 import type { Indexer } from '../indexer/indexer';
 import { listDestinationFolders } from '../migration/destination-paths';
 import type { MigrationController } from '../migration/migration-controller';
+import { DestinationExistsError } from '../migration/migration-transaction';
 import type { VaultRegistry } from '../vault-registry';
 import { FolderSuggestModal } from './folder-suggest-modal';
 import { MigrationReviewModal } from './migration-review-modal';
+
+export function formatMigrationPlanningError(error: unknown): string {
+  if (error instanceof DestinationExistsError) {
+    return 'Destination already exists. Use “Relink Backlinks to Existing Cross-Vault Note” when this note already exists there.';
+  }
+  return `Could not prepare migration: ${error instanceof Error ? error.message : String(error)}`;
+}
 
 export class FileOperationModal extends Modal {
   private targetVaultId = '';
@@ -140,7 +148,7 @@ export class FileOperationModal extends Modal {
             }
           }).open();
         } catch (error: unknown) {
-          new Notice(`Could not prepare migration: ${error instanceof Error ? error.message : String(error)}`);
+          new Notice(formatMigrationPlanningError(error));
         }
       }));
   }

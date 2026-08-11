@@ -21,7 +21,10 @@ import {
 } from '../src/migration/migration-view-models';
 import type { IndexedFile, VaultConfig } from '../src/types';
 import { formatCrossVaultWikilink } from '../src/migration/cross-vault-link';
-import { FileOperationModal } from '../src/modals/file-operation-modal';
+import {
+  FileOperationModal,
+  formatMigrationPlanningError,
+} from '../src/modals/file-operation-modal';
 import { handleMigrationReviewConfirmation } from '../src/modals/migration-review-modal';
 
 function testFile(filePath: string): TFile {
@@ -185,6 +188,15 @@ describe('migration picker and review view models', () => {
         after: '[[medicine::ZeroTier]]',
       }],
     });
+  });
+});
+
+describe('migration planning error formatting', () => {
+  it('keeps explicit destination-exists guidance while preserving generic fallback messaging', () => {
+    expect(formatMigrationPlanningError(new DestinationExistsError('C:/vaults/mathematics/Notes/Zerotier.md')))
+      .toBe('Destination already exists. Use “Relink Backlinks to Existing Cross-Vault Note” when this note already exists there.');
+    expect(formatMigrationPlanningError(new Error('planner unavailable')))
+      .toBe('Could not prepare migration: planner unavailable');
   });
 });
 
