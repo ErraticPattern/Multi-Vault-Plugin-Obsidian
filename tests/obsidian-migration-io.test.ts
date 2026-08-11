@@ -2,9 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import {
+  link as linkViaProdSpecifier,
   lstat as lstatViaProdSpecifier,
   open as openViaProdSpecifier,
   readFile as readFileViaProdSpecifier,
+  rename as renameViaProdSpecifier,
+  rm as rmViaProdSpecifier,
   writeFile as writeFileViaProdSpecifier,
 } from 'fs/promises';
 import { tmpdir } from 'node:os';
@@ -17,13 +20,17 @@ vi.mock('fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs/promises')>();
   return {
     ...actual,
+    link: vi.fn(actual.link),
     lstat: vi.fn(actual.lstat),
     open: vi.fn(actual.open),
     readFile: vi.fn(actual.readFile),
+    rename: vi.fn(actual.rename),
+    rm: vi.fn(actual.rm),
     writeFile: vi.fn(actual.writeFile),
   };
 });
 
+const actualFs = await vi.importActual<typeof import('fs/promises')>('fs/promises');
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
 
@@ -127,6 +134,35 @@ describe('ObsidianMigrationIo', () => {
     expect(await readdir(root)).toEqual(['Concurrent.md']);
   });
 
+  it('returns create ownership without post-link identity reads and can roll back', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
+    roots.push(root);
+    const io = new ObsidianMigrationIo({ vault: {}, fileManager: {} } as never);
+    const destination = path.join(root, 'Created.md');
+    let published = false;
+    vi.mocked(linkViaProdSpecifier).mockImplementationOnce(async (existingPath, newPath) => {
+      await actualFs.link(existingPath, newPath);
+      published = true;
+    });
+    vi.mocked(lstatViaProdSpecifier).mockImplementation(async (filePath, options) => {
+      if (published && filePath === destination) {
+        throw Object.assign(new Error('post-publication identity read failed'), { code: 'EIO' });
+      }
+      return actualFs.lstat(filePath, options as never);
+    });
+
+    try {
+      const ownership = await io.writeDestination(destination, 'created', null);
+      published = false;
+      await io.restoreDestination(destination, ownership);
+    } finally {
+      vi.mocked(lstatViaProdSpecifier).mockImplementation(actualFs.lstat);
+    }
+
+    expect(await io.destinationExists(destination)).toBe(false);
+    expect(await readdir(root)).toEqual([]);
+  });
+
   it('overwrites a destination only when the current content matches the expected original', async () => {
     const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
     roots.push(root);
@@ -138,6 +174,52 @@ describe('ObsidianMigrationIo', () => {
     await io.writeDestination(destination, 'updated', 'existing');
 
     expect(await io.readDestination(destination)).toBe('updated');
+  });
+
+  it('returns overwrite ownership without post-rename destination opens and can roll back', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
+    roots.push(root);
+    const io = new ObsidianMigrationIo({ vault: {}, fileManager: {} } as never);
+    const destination = path.join(root, 'Existing.md');
+    await writeFile(destination, 'existing', 'utf8');
+    let published = false;
+    vi.mocked(renameViaProdSpecifier).mockImplementationOnce(async (oldPath, newPath) => {
+      await actualFs.rename(oldPath, newPath);
+      published = true;
+    });
+    vi.mocked(openViaProdSpecifier).mockImplementation(async (filePath, flags, mode) => {
+      if (published && filePath === destination) {
+        throw Object.assign(new Error('post-publication destination open failed'), { code: 'EIO' });
+      }
+      return actualFs.open(filePath, flags, mode);
+    });
+
+    try {
+      const ownership = await io.writeDestination(destination, 'updated', 'existing');
+      published = false;
+      await io.restoreDestination(destination, ownership);
+    } finally {
+      vi.mocked(openViaProdSpecifier).mockImplementation(actualFs.open);
+    }
+
+    expect(await readFile(destination, 'utf8')).toBe('existing');
+    expect(await readdir(root)).toEqual(['Existing.md']);
+  });
+
+  it('retries post-publication stage cleanup without losing create ownership', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
+    roots.push(root);
+    const io = new ObsidianMigrationIo({ vault: {}, fileManager: {} } as never);
+    const destination = path.join(root, 'Created.md');
+    const cleanupFailure = Object.assign(new Error('stage cleanup temporarily failed'), { code: 'EIO' });
+    vi.mocked(rmViaProdSpecifier).mockRejectedValueOnce(cleanupFailure);
+
+    const ownership = await io.writeDestination(destination, 'created', null);
+
+    expect(await readFile(destination, 'utf8')).toBe('created');
+    expect(await readdir(root)).toEqual(['Created.md']);
+    await io.restoreDestination(destination, ownership);
+    expect(await readdir(root)).toEqual([]);
   });
 
   it('rejects an overwrite when the destination no longer matches the expected original', async () => {
@@ -157,17 +239,16 @@ describe('ObsidianMigrationIo', () => {
     const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
     roots.push(root);
     const app = { vault: {}, fileManager: {} };
-    const io = new ObsidianMigrationIo(app as never);
     const destination = path.join(root, 'Existing.md');
+    const io = new ObsidianMigrationIo(
+      app as never,
+      {
+        beforeOverwritePublication: async () => {
+          await writeFile(destination, 'changed during staging', 'utf8');
+        },
+      },
+    );
     await writeFile(destination, 'existing', 'utf8');
-
-    const mockedWriteFile = vi.mocked(writeFileViaProdSpecifier);
-    mockedWriteFile.mockImplementationOnce(async (filePath, data, encoding) => {
-      await writeFile(filePath as string, String(data), encoding as BufferEncoding);
-      if (typeof filePath === 'string' && filePath.includes('.mvp-stage-')) {
-        await writeFile(destination, 'changed during staging', 'utf8');
-      }
-    });
 
     await expect(io.writeDestination(destination, 'updated', 'existing'))
       .rejects.toBeInstanceOf(StaleMigrationPlanError);
@@ -306,7 +387,7 @@ describe('ObsidianMigrationIo', () => {
     expect(await io.destinationExists(destination)).toBe(false);
   });
 
-  it('leaves the original destination untouched when a mid-overwrite write fails', async () => {
+  it('leaves the original destination untouched when a stage write fails', async () => {
     const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
     roots.push(root);
     const app = { vault: {}, fileManager: {} };
@@ -314,17 +395,14 @@ describe('ObsidianMigrationIo', () => {
     const destination = path.join(root, 'Existing.md');
     await writeFile(destination, 'existing', 'utf8');
 
-    const mockedWriteFile = vi.mocked(writeFileViaProdSpecifier);
-    mockedWriteFile.mockImplementationOnce(async (filePath, data, encoding) => {
-      await writeFile(filePath as string, String(data).slice(0, 2), encoding as BufferEncoding);
-      throw new Error('disk full');
+    vi.mocked(openViaProdSpecifier).mockImplementationOnce(async (filePath, flags, mode) => {
+      const stageHandle = await actualFs.open(filePath, flags, mode);
+      vi.spyOn(stageHandle, 'write').mockRejectedValueOnce(new Error('disk full'));
+      return stageHandle;
     });
-    try {
-      await expect(io.writeDestination(destination, 'updated', 'existing'))
-        .rejects.toThrow('disk full');
-    } finally {
-      mockedWriteFile.mockClear();
-    }
+
+    await expect(io.writeDestination(destination, 'updated', 'existing'))
+      .rejects.toThrow('disk full');
 
     expect(await io.readDestination(destination)).toBe('existing');
     const entries = await readdir(root);

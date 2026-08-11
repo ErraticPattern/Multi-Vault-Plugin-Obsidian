@@ -7,7 +7,6 @@ import {
   readFile,
   rename,
   rm,
-  writeFile,
   type FileHandle,
 } from 'fs/promises';
 import * as path from 'path';
@@ -78,7 +77,7 @@ async function writeHandle(handle: FileHandle, content: string): Promise<void> {
   let offset = 0;
   while (offset < buffer.length) {
     const { bytesWritten } = await handle.write(buffer, offset, buffer.length - offset, offset);
-    if (bytesWritten === 0) throw new Error('Could not restore destination content');
+    if (bytesWritten === 0) throw new Error('Could not write destination content');
     offset += bytesWritten;
   }
   await handle.truncate(buffer.length);
@@ -114,16 +113,33 @@ export class ObsidianMigrationIo implements MigrationIo {
   ): Promise<DestinationOwnershipToken> {
     await mkdir(path.dirname(absolutePath), { recursive: true });
     const stagePath = `${absolutePath}.mvp-stage-${randomBytes(8).toString('hex')}`;
+    let stageHandle: FileHandle | null = null;
     try {
-      await writeFile(stagePath, content, { encoding: 'utf8', flag: 'wx' });
+      stageHandle = await open(stagePath, 'wx+');
+      await writeHandle(stageHandle, content);
+      const stageIdentity = await this.verifyStagedContent(stageHandle, content);
       if (expectedOriginal === null) {
-        return await this.publishCreate(absolutePath, stagePath, content);
+        return await this.publishCreate(
+          absolutePath,
+          stagePath,
+          stageHandle,
+          stageIdentity,
+          content,
+        );
       }
-      return await this.publishOverwrite(absolutePath, stagePath, content, expectedOriginal);
+      return await this.publishOverwrite(
+        absolutePath,
+        stagePath,
+        stageHandle,
+        stageIdentity,
+        content,
+        expectedOriginal,
+      );
     } finally {
-      await rm(stagePath).catch((error: unknown) => {
-        if (!isNodeError(error, 'ENOENT')) throw error;
-      });
+      if (stageHandle) {
+        await stageHandle.close().catch(() => undefined);
+        await this.cleanupStage(stagePath);
+      }
     }
   }
 
@@ -166,48 +182,79 @@ export class ObsidianMigrationIo implements MigrationIo {
   private async publishCreate(
     absolutePath: string,
     stagePath: string,
+    stageHandle: FileHandle,
+    stageIdentity: FileIdentity,
     content: string,
   ): Promise<DestinationOwnershipToken> {
+    await this.assertStageReady(stagePath, stageHandle, stageIdentity, content);
     // A same-directory hard link gives create-only publication atomic EEXIST semantics
-    // without exposing a partially written destination.
+    // without exposing a partially written destination. Ownership is issued from the
+    // verified stage identity immediately after link, with no destination I/O gap.
     await link(stagePath, absolutePath);
-    const [published, staged] = await Promise.all([
-      lstat(absolutePath, { bigint: true }),
-      lstat(stagePath, { bigint: true }),
-    ]);
-    const identity = identityOf(published);
-    if (!sameIdentity(identity, identityOf(staged))) {
-      throw new StaleMigrationPlanError(absolutePath);
-    }
-    return this.createOwnership(absolutePath, identity, content, null);
+    return this.createOwnership(absolutePath, stageIdentity, content, null);
   }
 
   private async publishOverwrite(
     absolutePath: string,
     stagePath: string,
+    stageHandle: FileHandle,
+    stageIdentity: FileIdentity,
     content: string,
     expectedOriginal: string,
   ): Promise<DestinationOwnershipToken> {
     await this.assertReviewedDestination(absolutePath, expectedOriginal);
     await this.raceHooks.beforeOverwritePublication?.();
     await this.assertReviewedDestination(absolutePath, expectedOriginal);
+    await this.assertStageReady(stagePath, stageHandle, stageIdentity, content);
 
     // Node exposes no portable rename compare-and-swap. A non-cooperating process can
     // still replace this directory entry after the final identity check and before
-    // rename. The checks here narrow that irreducible window without claiming CAS.
+    // rename. Ownership is issued from the verified stage identity immediately after
+    // rename, so no fallible destination operation creates an unowned publication.
     await rename(stagePath, absolutePath);
+    return this.createOwnership(
+      absolutePath,
+      stageIdentity,
+      content,
+      expectedOriginal,
+    );
+  }
 
-    const handle = await open(absolutePath, 'r');
-    try {
-      const identity = identityOf(await handle.stat({ bigint: true }));
-      const pathIdentity = await this.readPathIdentity(absolutePath);
-      const contentMatches = await handleContentEquals(handle, content);
-      if (!sameIdentity(identity, pathIdentity) || !contentMatches) {
-        throw new StaleMigrationPlanError(absolutePath);
+  private async verifyStagedContent(
+    stageHandle: FileHandle,
+    content: string,
+  ): Promise<FileIdentity> {
+    if (!await handleContentEquals(stageHandle, content)) {
+      throw new Error('Staged destination content could not be verified');
+    }
+    return identityOf(await stageHandle.stat({ bigint: true }));
+  }
+
+  private async assertStageReady(
+    stagePath: string,
+    stageHandle: FileHandle,
+    expectedIdentity: FileIdentity,
+    content: string,
+  ): Promise<void> {
+    const handleIdentity = identityOf(await stageHandle.stat({ bigint: true }));
+    const pathIdentity = identityOf(await lstat(stagePath, { bigint: true }));
+    if (!sameIdentity(handleIdentity, expectedIdentity) ||
+        !sameIdentity(pathIdentity, expectedIdentity) ||
+        !await handleContentEquals(stageHandle, content)) {
+      throw new Error('Staged destination changed before publication');
+    }
+  }
+
+  private async cleanupStage(stagePath: string): Promise<void> {
+    // A create publication leaves a second hard link at the stage path. Cleanup is
+    // bounded best effort because a committed publication must still return ownership.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await rm(stagePath);
+        return;
+      } catch (error: unknown) {
+        if (isNodeError(error, 'ENOENT')) return;
       }
-      return this.createOwnership(absolutePath, identity, content, expectedOriginal);
-    } finally {
-      await handle.close();
     }
   }
 
