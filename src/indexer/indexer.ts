@@ -25,6 +25,7 @@ export class Indexer {
   private refreshPromise: Promise<void> | null = null;
   private rebuildPromise: Promise<void> | null = null;
   private operationTail: Promise<void> = Promise.resolve();
+  private readonly catalogListeners = new Set<() => void>();
 
   constructor(
     private readonly app: App,
@@ -39,20 +40,34 @@ export class Indexer {
 
   public async initialize(): Promise<void> {
     this.indexedFiles = await this.store.loadIndex();
+    this.emitCatalogChanged();
   }
 
   public getIndexedFiles(): IndexedFile[] {
     return this.indexedFiles;
   }
 
+  public onCatalogChanged(listener: () => void): () => void {
+    this.catalogListeners.add(listener);
+    return () => {
+      this.catalogListeners.delete(listener);
+    };
+  }
+
   public async applyMutations(mutations: IndexMutation[]): Promise<void> {
     if (mutations.length === 0) return;
-    return this.enqueue(() => this.performMutations(mutations));
+    return this.enqueue(async () => {
+      await this.performMutations(mutations);
+      this.emitCatalogChanged();
+    });
   }
 
   public refreshIncremental(showNotice = false): Promise<void> {
     if (this.refreshPromise) return this.refreshPromise;
-    const operation = this.enqueue(() => this.performIncrementalRefresh(showNotice));
+    const operation = this.enqueue(async () => {
+      await this.performIncrementalRefresh(showNotice);
+      this.emitCatalogChanged();
+    });
     const settled = operation.finally(() => {
       if (this.refreshPromise === settled) this.refreshPromise = null;
     });
@@ -65,7 +80,10 @@ export class Indexer {
       if (showNotice) new Notice('Indexing is already in progress...');
       return this.rebuildPromise;
     }
-    const operation = this.enqueue(() => this.performFullRebuild(showNotice));
+    const operation = this.enqueue(async () => {
+      await this.performFullRebuild(showNotice);
+      this.emitCatalogChanged();
+    });
     const settled = operation.finally(() => {
       if (this.rebuildPromise === settled) this.rebuildPromise = null;
     });
@@ -77,6 +95,7 @@ export class Indexer {
     await this.enqueue(async () => {
       await this.store.clearIndex();
       this.indexedFiles = [];
+      this.emitCatalogChanged();
     });
     new Notice('Index cleared.');
   }
@@ -208,6 +227,16 @@ export class Indexer {
       this.settings.indexOptions.storeSnippetsInCache !== false,
     );
     this.indexedFiles = files;
+  }
+
+  private emitCatalogChanged(): void {
+    for (const listener of [...this.catalogListeners]) {
+      try {
+        listener();
+      } catch {
+        // Index persistence must remain independent from API consumers.
+      }
+    }
   }
 
   private identity(vaultId: string, relativePath: string): string {

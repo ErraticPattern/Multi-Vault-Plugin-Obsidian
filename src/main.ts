@@ -30,6 +30,8 @@ import {
 } from './shared-settings/shared-settings-service';
 import { loadIdeasSeed, SharedSettingsSeedModal } from './modals/shared-settings-seed-modal';
 import { SharedSettingsStatusModal } from './modals/shared-settings-status-modal';
+import { MultiVaultPublicApi } from './api/multi-vault-public-api';
+import type { MultiVaultPublicApiV1 } from './api/public-api-types';
 
 export const SYNC_SHARED_SETTINGS_COMMAND_ID = 'multi-vault-sync-shared-settings';
 export const SHOW_SHARED_SETTINGS_STATUS_COMMAND_ID = 'multi-vault-show-sync-status';
@@ -44,6 +46,11 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
   sharedSettingsService: SharedSettingsService | null = null;
   private sharedSettingsStore: SharedSettingsStore | null = null;
   private sharedSettingsWriterInstanceId: string | null = null;
+  private publicApiInstance: MultiVaultPublicApi | null = null;
+
+  get publicApi(): MultiVaultPublicApiV1 | undefined {
+    return this.publicApiInstance ?? undefined;
+  }
 
   async onload() {
     await this.loadSettings();
@@ -94,6 +101,12 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
     // Initialize indexer (load cache)
     await this.indexer.initialize();
     this.refreshSearchEngine();
+    this.publicApiInstance = new MultiVaultPublicApi(
+      this.settings,
+      this.vaultRegistry,
+      this.indexer,
+      this.fileOpener,
+    );
 
     // Register custom views
     this.registerView(
@@ -280,6 +293,7 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
       },
       onAppearanceChanged: () => {
         this.refreshSharedAppearance();
+        this.publicApiInstance?.notifyAppearanceChanged();
       },
       onCatalogChanged: async () => {
         await this.indexer.refreshIncremental(false);
@@ -305,6 +319,8 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
   }
 
   onunload() {
+    this.publicApiInstance?.dispose();
+    this.publicApiInstance = null;
     this.sharedSettingsService?.dispose();
   }
 

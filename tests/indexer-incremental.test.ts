@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Indexer } from '../src/indexer/indexer';
 import type { FileEntry } from '../src/indexer/file-scanner';
 import type { IndexedFile, MultiVaultSettings, VaultConfig } from '../src/types';
@@ -130,12 +130,15 @@ describe('Indexer.applyMutations', () => {
     const original = indexed('ideas', 'Source.md');
     const test = harness([original], [], 0, true);
     await test.indexer.initialize();
+    const onCatalogChanged = vi.fn();
+    test.indexer.onCatalogChanged(onCatalogChanged);
 
     await expect(test.indexer.applyMutations([
       { kind: 'remove', vaultId: 'ideas', relativePath: 'Source.md' },
     ])).rejects.toThrow('cache unavailable');
 
     expect(test.indexer.getIndexedFiles()).toEqual([original]);
+    expect(onCatalogChanged).not.toHaveBeenCalled();
   });
 });
 
@@ -197,6 +200,8 @@ describe('Indexer.refreshIncremental', () => {
       { vaultId: 'medicine', file: entry('medicine', 'B.md') },
     ], 10);
     await test.indexer.initialize();
+    const onCatalogChanged = vi.fn();
+    const unsubscribe = test.indexer.onCatalogChanged(onCatalogChanged);
 
     await Promise.all([
       test.indexer.refreshIncremental(),
@@ -206,5 +211,10 @@ describe('Indexer.refreshIncremental', () => {
 
     expect(test.scanCalls).toBe(2);
     expect(test.saves).toBe(1);
+    expect(onCatalogChanged).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    await test.indexer.refreshIncremental();
+    expect(onCatalogChanged).toHaveBeenCalledTimes(1);
   });
 });
