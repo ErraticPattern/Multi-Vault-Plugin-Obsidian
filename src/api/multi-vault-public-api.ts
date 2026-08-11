@@ -60,8 +60,11 @@ function normalizeAliases(value: unknown): string[] {
   return aliases;
 }
 
-function normalizedIdentity(identity: VaultIdentity): string {
-  return `${identity.vaultId}:${identity.relativePath.replace(/\\/g, '/').toLowerCase()}`;
+function foldRelativePath(relativePath: string, platform: NodeJS.Platform): string {
+  const normalized = relativePath.replace(/\\/g, '/');
+  // Only Windows guarantees case-insensitive paths; folding elsewhere would conflate
+  // notes that a case-sensitive filesystem keeps distinct.
+  return platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
 function withoutMarkdownExtension(relativePath: string): string {
@@ -81,13 +84,18 @@ export class MultiVaultPublicApi implements MultiVaultPublicApiV1 {
   private eventFlushScheduled = false;
   private catalogEventPending = false;
   private appearanceEventPending = false;
+  private catalogFingerprint: string;
+  private appearanceFingerprint: string;
 
   constructor(
     private readonly settings: MultiVaultSettings,
     private readonly vaultRegistry: PublicApiVaultRegistry,
     private readonly indexer: PublicApiIndexer,
     private readonly fileOpener: PublicApiFileOpener,
+    private readonly platform: NodeJS.Platform = process.platform,
   ) {
+    this.catalogFingerprint = this.computeCatalogFingerprint();
+    this.appearanceFingerprint = this.computeAppearanceFingerprint();
     this.unsubscribeIndexer = this.indexer.onCatalogChanged(() => {
       this.scheduleEvent('catalog-changed');
     });
@@ -121,7 +129,11 @@ export class MultiVaultPublicApi implements MultiVaultPublicApiV1 {
       ? Math.min(90, Math.max(10, Math.round(configured.colorIntensity)))
       : DISABLED_SETTINGS.colorIntensity;
     return {
-      enabled: configured.enabled === true && sourceEnabled,
+      // Integration is only effectively enabled when this source vault actually has
+      // at least one valid, selectable external target vault.
+      enabled: configured.enabled === true
+        && sourceEnabled
+        && this.effectiveTargetVaultIds().length > 0,
       colorMode,
       colorIntensity: intensity,
     };
@@ -146,17 +158,17 @@ export class MultiVaultPublicApi implements MultiVaultPublicApiV1 {
     if (resolution.kind === 'missing') return resolution;
 
     const targets = new Map(projected.map(({ resolverFile, target }) => [
-      normalizedIdentity(resolverFile),
+      this.normalizedIdentity(resolverFile),
       target,
     ]));
     if (resolution.kind === 'resolved') {
-      const target = targets.get(normalizedIdentity(resolution.target));
+      const target = targets.get(this.normalizedIdentity(resolution.target));
       return target ? { kind: 'resolved', target: this.cloneTarget(target) } : { kind: 'missing' };
     }
     return {
       kind: 'ambiguous',
       candidates: resolution.candidates.flatMap((candidate) => {
-        const target = targets.get(normalizedIdentity(candidate));
+        const target = targets.get(this.normalizedIdentity(candidate));
         return target ? [this.cloneTarget(target)] : [];
       }),
     };
@@ -196,8 +208,21 @@ export class MultiVaultPublicApi implements MultiVaultPublicApiV1 {
     };
   }
 
-  notifyAppearanceChanged(): void {
-    this.scheduleEvent('appearance-changed');
+  /**
+   * Re-reads the effective configuration and emits only the event categories that
+   * actually changed. Consumers depend on this instead of the indexer callback so a
+   * failing index refresh cannot leave them holding stale target scope or appearance.
+   */
+  refreshConfiguration(): void {
+    if (this.disposed) return;
+    const catalogFingerprint = this.computeCatalogFingerprint();
+    const appearanceFingerprint = this.computeAppearanceFingerprint();
+    const catalogChanged = catalogFingerprint !== this.catalogFingerprint;
+    const appearanceChanged = appearanceFingerprint !== this.appearanceFingerprint;
+    this.catalogFingerprint = catalogFingerprint;
+    this.appearanceFingerprint = appearanceFingerprint;
+    if (catalogChanged) this.scheduleEvent('catalog-changed');
+    if (appearanceChanged) this.scheduleEvent('appearance-changed');
   }
 
   dispose(): void {
@@ -214,18 +239,73 @@ export class MultiVaultPublicApi implements MultiVaultPublicApiV1 {
     return currentVaultId === null ? undefined : this.vaultRegistry.getVaultById(currentVaultId);
   }
 
+  private normalizedIdentity(identity: VaultIdentity): string {
+    return `${identity.vaultId}:${foldRelativePath(identity.relativePath, this.platform)}`;
+  }
+
+  /**
+   * The external target vaults this source vault can actually link to: known,
+   * enabled (therefore indexable), external, and deduplicated.
+   */
+  private effectiveTargetVaultIds(): string[] {
+    const configured = this.settings.virtualLinks;
+    if (!configured) return [];
+    const currentVaultId = this.vaultRegistry.getCurrentVaultId();
+    if (currentVaultId === null) return [];
+
+    const configuredTargets = configured.targetVaultIdsBySource?.[currentVaultId];
+    if (!Array.isArray(configuredTargets)) return [];
+
+    const seen = new Set<string>();
+    const effective: string[] = [];
+    for (const vaultId of configuredTargets) {
+      if (typeof vaultId !== 'string' || vaultId === currentVaultId || seen.has(vaultId)) continue;
+      const vault = this.vaultRegistry.getVaultById(vaultId);
+      if (!vault || vault.enabled !== true) continue;
+      seen.add(vaultId);
+      effective.push(vaultId);
+    }
+    return effective;
+  }
+
+  /** Everything that changes which external notes are reachable or how they are identified. */
+  private computeCatalogFingerprint(): string {
+    const targetVaultIds = [...this.effectiveTargetVaultIds()].sort();
+    return JSON.stringify({
+      sourceVaultId: this.vaultRegistry.getCurrentVaultId(),
+      enabled: this.getVirtualLinkSettings().enabled,
+      globalExcludePatterns: this.settings.indexOptions?.globalExcludePatterns ?? null,
+      targets: targetVaultIds.map((vaultId) => {
+        const vault = this.vaultRegistry.getVaultById(vaultId);
+        return {
+          vaultId,
+          name: vault?.name ?? null,
+          enabled: vault?.enabled === true,
+          includePatterns: vault?.includePatterns ?? null,
+          excludePatterns: vault?.excludePatterns ?? null,
+        };
+      }),
+    });
+  }
+
+  /** Everything API-visible that only changes how external links should look. */
+  private computeAppearanceFingerprint(): string {
+    const settings = this.getVirtualLinkSettings();
+    return JSON.stringify({
+      colorMode: settings.colorMode,
+      colorIntensity: settings.colorIntensity,
+      sourceColor: validColor(this.currentVault()?.color) ?? null,
+      targetColors: [...this.effectiveTargetVaultIds()].sort().map((vaultId) => (
+        validColor(this.vaultRegistry.getVaultById(vaultId)?.color) ?? null
+      )),
+    });
+  }
+
   private projectedFiles(): ProjectedFile[] {
     if (!this.getVirtualLinkSettings().enabled) return [];
     const currentVaultId = this.vaultRegistry.getCurrentVaultId();
     if (currentVaultId === null) return [];
-    const configured = this.settings.virtualLinks;
-    if (!configured) return [];
-
-    const configuredTargets = configured.targetVaultIdsBySource?.[currentVaultId];
-    const selectedVaultIds = new Set(
-      (Array.isArray(configuredTargets) ? configuredTargets : [])
-        .filter((vaultId): vaultId is string => typeof vaultId === 'string' && vaultId !== currentVaultId),
-    );
+    const selectedVaultIds = new Set(this.effectiveTargetVaultIds());
     if (selectedVaultIds.size === 0) return [];
 
     const seen = new Set<string>();
@@ -235,7 +315,7 @@ export class MultiVaultPublicApi implements MultiVaultPublicApiV1 {
       const vault = this.vaultRegistry.getVaultById(file.vaultId);
       if (!vault) continue;
       const identity = { vaultId: vault.id, relativePath: file.relativePath.replace(/\\/g, '/') };
-      const identityKey = normalizedIdentity(identity);
+      const identityKey = this.normalizedIdentity(identity);
       if (seen.has(identityKey)) continue;
       seen.add(identityKey);
 
@@ -261,8 +341,8 @@ export class MultiVaultPublicApi implements MultiVaultPublicApiV1 {
 
   private findProjectedFile(identity: VaultIdentity): ProjectedFile | undefined {
     if (this.disposed) return undefined;
-    const identityKey = normalizedIdentity(identity);
-    return this.projectedFiles().find(({ target }) => normalizedIdentity(target.identity) === identityKey);
+    const identityKey = this.normalizedIdentity(identity);
+    return this.projectedFiles().find(({ target }) => this.normalizedIdentity(target.identity) === identityKey);
   }
 
   private cloneTarget(target: VirtualLinkTarget): VirtualLinkTarget {

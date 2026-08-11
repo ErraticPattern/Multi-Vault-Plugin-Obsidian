@@ -66,7 +66,7 @@ function makeSettings(): MultiVaultSettings {
   };
 }
 
-function harness() {
+function harness(platform: NodeJS.Platform = 'win32') {
   const settings = makeSettings();
   let files = [...initialFiles];
   let currentVaultId: string | null = 'ideas';
@@ -83,7 +83,7 @@ function harness() {
     getVaultById: (vaultId: string) => settings.vaults.find((vault) => vault.id === vaultId),
   };
   const openFile = vi.fn(async () => undefined);
-  const api = new MultiVaultPublicApi(settings, registry, indexer, { openFile });
+  const api = new MultiVaultPublicApi(settings, registry, indexer, { openFile }, platform);
   return {
     api,
     settings,
@@ -223,7 +223,8 @@ describe('MultiVault public API v1 contract', () => {
 
     test.emitCatalogChanged();
     test.emitCatalogChanged();
-    test.api.notifyAppearanceChanged();
+    test.settings.virtualLinks!.colorMode = 'muted-text';
+    test.api.refreshConfiguration();
     await flushEvents();
     expect(events).toEqual([
       { kind: 'catalog-changed' },
@@ -232,7 +233,8 @@ describe('MultiVault public API v1 contract', () => {
 
     unsubscribe();
     test.emitCatalogChanged();
-    test.api.notifyAppearanceChanged();
+    test.settings.virtualLinks!.colorMode = 'soft-pill';
+    test.api.refreshConfiguration();
     await flushEvents();
     expect(events).toHaveLength(2);
   });
@@ -243,7 +245,8 @@ describe('MultiVault public API v1 contract', () => {
     test.api.dispose();
 
     test.emitCatalogChanged();
-    test.api.notifyAppearanceChanged();
+    test.settings.virtualLinks!.colorMode = 'muted-text';
+    test.api.refreshConfiguration();
     await test.api.openTarget({ vaultId: 'medicine', relativePath: 'README.md' });
     await flushEvents();
 
@@ -254,5 +257,134 @@ describe('MultiVault public API v1 contract', () => {
     expect(test.api.listVirtualLinkTargets()).toEqual([]);
     expect(test.api.resolveTarget({ vaultName: 'medicine', noteRef: 'README' }))
       .toEqual({ kind: 'missing' });
+  });
+});
+
+describe('effective virtual-link enablement', () => {
+  let test: ReturnType<typeof harness>;
+
+  beforeEach(() => {
+    test = harness();
+  });
+
+  it('is disabled when the source vault has selected no target vault at all', () => {
+    test.settings.virtualLinks!.targetVaultIdsBySource = {};
+    expect(test.api.getVirtualLinkSettings().enabled).toBe(false);
+    expect(test.api.listVirtualLinkTargets()).toEqual([]);
+
+    test.settings.virtualLinks!.targetVaultIdsBySource = { ideas: [] };
+    expect(test.api.getVirtualLinkSettings().enabled).toBe(false);
+  });
+
+  it('is disabled when only the source vault itself is selected', () => {
+    test.settings.virtualLinks!.targetVaultIdsBySource = { ideas: ['ideas'] };
+    expect(test.api.getVirtualLinkSettings().enabled).toBe(false);
+    expect(test.api.listVirtualLinkTargets()).toEqual([]);
+  });
+
+  it('is disabled when every selected target vault is unknown or disabled', () => {
+    test.settings.virtualLinks!.targetVaultIdsBySource = { ideas: ['ghost', 42 as never] };
+    expect(test.api.getVirtualLinkSettings().enabled).toBe(false);
+
+    test.settings.virtualLinks!.targetVaultIdsBySource = { ideas: ['medicine'] };
+    test.settings.vaults.find((vault) => vault.id === 'medicine')!.enabled = false;
+    expect(test.api.getVirtualLinkSettings().enabled).toBe(false);
+    expect(test.api.listVirtualLinkTargets()).toEqual([]);
+  });
+
+  it('is enabled and lists only the valid targets when at least one external vault survives', () => {
+    test.settings.virtualLinks!.targetVaultIdsBySource = {
+      ideas: ['ghost', 'ideas', 'medicine', 'medicine'],
+    };
+    expect(test.api.getVirtualLinkSettings().enabled).toBe(true);
+    expect(test.api.listVirtualLinkTargets().map(({ identity }) => identity.vaultId))
+      .toEqual(['medicine', 'medicine', 'medicine']);
+  });
+});
+
+describe('configuration refresh events', () => {
+  let test: ReturnType<typeof harness>;
+  let events: MultiVaultApiEvent[];
+
+  beforeEach(() => {
+    test = harness();
+    events = [];
+    test.api.subscribe((event) => events.push(event));
+  });
+
+  it('emits nothing when a save changed nothing the API exposes', async () => {
+    test.settings.savedSearches = [{ name: 'unrelated', query: 'x' } as never];
+    test.api.refreshConfiguration();
+    await flushEvents();
+    expect(events).toEqual([]);
+  });
+
+  it('emits appearance only for a style-only change', async () => {
+    test.settings.virtualLinks!.colorIntensity = 80;
+    test.api.refreshConfiguration();
+    await flushEvents();
+    expect(events).toEqual([{ kind: 'appearance-changed' }]);
+  });
+
+  it('emits catalog for a target-scope change even when no index refresh runs', async () => {
+    test.settings.virtualLinks!.targetVaultIdsBySource = { ideas: ['hobbies'] };
+    test.api.refreshConfiguration();
+    await flushEvents();
+    expect(events).toContainEqual({ kind: 'catalog-changed' });
+    expect(test.api.listVirtualLinkTargets().map(({ identity }) => identity.vaultId))
+      .toEqual(['hobbies']);
+  });
+
+  it('emits catalog when the integration is globally disabled', async () => {
+    test.settings.virtualLinks!.enabled = false;
+    test.api.refreshConfiguration();
+    await flushEvents();
+    expect(events).toEqual([{ kind: 'catalog-changed' }]);
+  });
+
+  it('emits both categories when catalog and appearance both changed', async () => {
+    test.settings.virtualLinks!.targetVaultIdsBySource = { ideas: ['hobbies'] };
+    test.settings.virtualLinks!.colorMode = 'colored-underline';
+    test.api.refreshConfiguration();
+    await flushEvents();
+    expect(events).toEqual([
+      { kind: 'catalog-changed' },
+      { kind: 'appearance-changed' },
+    ]);
+  });
+
+  it('emits catalog when a target vault is renamed', async () => {
+    test.settings.vaults.find((vault) => vault.id === 'medicine')!.name = 'Medicine';
+    test.api.refreshConfiguration();
+    await flushEvents();
+    expect(events).toEqual([{ kind: 'catalog-changed' }]);
+  });
+});
+
+describe('canonical identity is platform-aware', () => {
+  const caseVariants: IndexedFile[] = [
+    indexed('medicine', 'Notes/Case.md'),
+    indexed('medicine', 'Notes/case.md'),
+  ];
+
+  it('keeps case-distinct note paths separate on case-sensitive platforms', async () => {
+    const test = harness('linux');
+    test.setFiles(caseVariants);
+
+    expect(test.api.listVirtualLinkTargets().map(({ identity }) => identity.relativePath))
+      .toEqual(['Notes/Case.md', 'Notes/case.md']);
+
+    await test.api.openTarget({ vaultId: 'medicine', relativePath: 'Notes/case.md' });
+    expect(test.openFile).toHaveBeenCalledWith(expect.objectContaining({
+      relativePath: 'Notes/case.md',
+    }));
+  });
+
+  it('folds case-only path differences on Windows', () => {
+    const test = harness('win32');
+    test.setFiles(caseVariants);
+
+    expect(test.api.listVirtualLinkTargets().map(({ identity }) => identity.relativePath))
+      .toEqual(['Notes/Case.md']);
   });
 });

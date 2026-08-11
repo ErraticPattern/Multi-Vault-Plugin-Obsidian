@@ -287,15 +287,19 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
     this.sharedSettingsService?.attachRuntime({
       replaceVaults: (vaults) => {
         this.vaultRegistry.replaceVaults(vaults);
+        // Signal consumers from the canonical replacement itself so a later refresh
+        // failure cannot swallow a target-scope change.
+        this.publicApiInstance?.refreshConfiguration();
       },
       saveLocalMirror: async (settings) => {
         await this.saveData(settings);
       },
       onAppearanceChanged: () => {
+        this.publicApiInstance?.refreshConfiguration();
         this.refreshSharedAppearance();
-        this.publicApiInstance?.notifyAppearanceChanged();
       },
       onCatalogChanged: async () => {
+        this.publicApiInstance?.refreshConfiguration();
         await this.indexer.refreshIncremental(false);
         this.refreshSearchEngine();
         this.refreshSidebar();
@@ -331,6 +335,7 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
   async saveSettings() {
     this.settings.vaults = this.vaultRegistry.getVaults();
     await this.saveData(this.settings);
+    this.publicApiInstance?.refreshConfiguration();
   }
 
   isSharedConfigurationEnabled(): boolean {
