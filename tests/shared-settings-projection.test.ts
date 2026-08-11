@@ -1,14 +1,28 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, realpath, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, symlink } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
 import { applySharedProjection, projectSharedSettings } from '../src/shared-settings/shared-settings-projection';
-import { normalizePathKey, normalizeVaultPath } from '../src/shared-settings/path-identity';
+import {
+  normalizePathDisplay,
+  normalizePathKey,
+  normalizeVaultPath,
+} from '../src/shared-settings/path-identity';
 import type { SharedSettingsProjection } from '../src/shared-settings/shared-settings-types';
 import type { MultiVaultSettings } from '../src/types';
 
 const tempDirs: string[] = [];
+const SUPPORTED_DIRECTORY_ALIAS_PLATFORMS = new Set<NodeJS.Platform>([
+  'aix',
+  'darwin',
+  'freebsd',
+  'linux',
+  'openbsd',
+  'sunos',
+  'win32',
+]);
+const aliasRegression = SUPPORTED_DIRECTORY_ALIAS_PLATFORMS.has(process.platform) ? it : it.skip;
 
 function createLocalSettings(): MultiVaultSettings {
   return {
@@ -70,6 +84,15 @@ function createLocalSettings(): MultiVaultSettings {
   };
 }
 
+async function createDirectoryAlias(targetPath: string, aliasPath: string): Promise<void> {
+  if (process.platform === 'win32') {
+    await symlink(targetPath, aliasPath, 'junction');
+    return;
+  }
+
+  await symlink(targetPath, aliasPath, 'dir');
+}
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
@@ -96,6 +119,169 @@ describe('path identity', () => {
 });
 
 describe('shared settings projection', () => {
+  aliasRegression('converges aliased vault paths to one realpath identity across projection and apply', async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'mvn-shared-settings-alias-'));
+    tempDirs.push(tempRoot);
+
+    const realVaultPath = path.join(tempRoot, 'Ideas');
+    const aliasVaultPath = path.join(tempRoot, 'Ideas-alias');
+    await mkdir(realVaultPath);
+    await createDirectoryAlias(realVaultPath, aliasVaultPath);
+
+    const projection = projectSharedSettings({
+      ...createLocalSettings(),
+      vaults: [
+        {
+          id: 'real-id',
+          name: 'Ideas real',
+          path: realVaultPath,
+          enabled: true,
+          color: '#AA0000'
+        },
+        {
+          id: 'alias-id',
+          name: 'Ideas alias',
+          path: aliasVaultPath,
+          enabled: false,
+          color: '#00AA00'
+        }
+      ],
+      excludedVaultIds: ['real-id', 'alias-id'],
+      virtualLinks: {
+        enabled: true,
+        excludedSourceVaultIds: ['real-id', 'alias-id'],
+        targetVaultIdsBySource: {
+          'real-id': ['alias-id'],
+          'alias-id': ['real-id']
+        },
+        colorMode: 'soft-pill',
+        colorIntensity: 50
+      }
+    }, normalizePathKey(aliasVaultPath, process.platform));
+
+    const expectedPathKey = normalizePathKey(await realpath(realVaultPath), process.platform);
+
+    expect(projection.vaults).toEqual([
+      {
+        id: 'alias-id',
+        pathKey: expectedPathKey,
+        path: normalizePathDisplay(aliasVaultPath, process.platform),
+        name: 'Ideas alias',
+        color: '#00AA00',
+        enabled: false,
+      }
+    ]);
+    expect(projection.excludedVaultIds).toEqual(['alias-id']);
+    expect(projection.virtualLinks).toEqual({
+      enabled: true,
+      excludedSourceVaultIds: ['alias-id'],
+      targetVaultIdsBySource: {
+        'alias-id': ['alias-id']
+      },
+      colorMode: 'soft-pill',
+      colorIntensity: 50
+    });
+
+    const applied = applySharedProjection({
+      ...createLocalSettings(),
+      vaults: [
+        {
+          id: 'local-alias',
+          name: 'Local alias',
+          path: aliasVaultPath,
+          enabled: true,
+          color: '#123456'
+        }
+      ]
+    }, projection);
+
+    expect(applied.vaults).toEqual([
+      {
+        id: 'alias-id',
+        path: normalizePathDisplay(aliasVaultPath, process.platform),
+        name: 'Ideas alias',
+        color: '#00AA00',
+        enabled: false,
+      }
+    ]);
+  });
+
+  aliasRegression('prefers the vault matching the current raw or canonical path when aliases share one real path', async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'mvn-shared-settings-current-'));
+    tempDirs.push(tempRoot);
+
+    const realVaultPath = path.join(tempRoot, 'Ideas');
+    const aliasVaultPath = path.join(tempRoot, 'Ideas-alias');
+    await mkdir(realVaultPath);
+    await createDirectoryAlias(realVaultPath, aliasVaultPath);
+
+    const localSettings: MultiVaultSettings = {
+      ...createLocalSettings(),
+      vaults: [
+        {
+          id: 'real-id',
+          name: 'Ideas real',
+          path: realVaultPath,
+          enabled: true,
+          color: '#AA0000'
+        },
+        {
+          id: 'alias-id',
+          name: 'Ideas alias',
+          path: aliasVaultPath,
+          enabled: true,
+          color: '#00AA00'
+        }
+      ],
+      excludedVaultIds: []
+    };
+
+    const rawCurrentProjection = projectSharedSettings(localSettings, normalizePathKey(aliasVaultPath, process.platform));
+    expect(rawCurrentProjection.vaults[0].id).toBe('alias-id');
+
+    const canonicalCurrentProjection = projectSharedSettings(
+      localSettings,
+      await normalizeVaultPath(aliasVaultPath, process.platform),
+    );
+    expect(canonicalCurrentProjection.vaults[0].id).toBe('real-id');
+  });
+
+  it('falls back to the first duplicate encountered when current path does not disambiguate', () => {
+    const duplicatePath = 'C:/Vaults/Ideas';
+    const projection = projectSharedSettings({
+      ...createLocalSettings(),
+      vaults: [
+        {
+          id: 'z-first',
+          name: 'First duplicate',
+          path: duplicatePath,
+          enabled: true,
+          color: '#ABCDEF'
+        },
+        {
+          id: 'a-second',
+          name: 'Second duplicate',
+          path: duplicatePath,
+          enabled: false,
+          color: '#123456'
+        }
+      ],
+      excludedVaultIds: ['z-first', 'a-second']
+    }, 'c:/vaults/other');
+
+    expect(projection.vaults).toEqual([
+      {
+        id: 'z-first',
+        pathKey: 'c:/vaults/ideas',
+        path: 'C:/Vaults/Ideas',
+        name: 'First duplicate',
+        color: '#ABCDEF',
+        enabled: true,
+      }
+    ]);
+    expect(projection.excludedVaultIds).toEqual(['z-first']);
+  });
+
   it('projects only shared settings, converges duplicate path identities, and clones deeply', () => {
     const localSettings = createLocalSettings();
 

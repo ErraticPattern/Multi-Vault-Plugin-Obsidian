@@ -1,6 +1,7 @@
 import type { MultiVaultSettings, VaultConfig } from '../types';
 import {
   inferPlatformFromPath,
+  normalizeExistingPathKey,
   normalizePathDisplay,
   normalizePathKey,
 } from './path-identity';
@@ -27,8 +28,17 @@ const DEFAULT_VIRTUAL_LINKS: SharedVirtualLinkSettings = {
 };
 
 interface CanonicalVaultCandidate {
-  canonical: SharedVaultRecord;
+  canonical: SharedVaultCandidate;
   aliases: string[];
+}
+
+interface CurrentPathKeys {
+  rawPathKey: string;
+  canonicalPathKey: string;
+}
+
+interface SharedVaultCandidate extends SharedVaultRecord {
+  rawPathKey: string;
 }
 
 function cloneSavedSearches(savedSearches: MultiVaultSettings['savedSearches']): MultiVaultSettings['savedSearches'] {
@@ -80,22 +90,40 @@ function sanitizeColorIntensity(intensity: number | undefined): number {
   return Math.min(90, Math.max(10, numeric));
 }
 
-function compareVaultCandidates(left: SharedVaultRecord, right: SharedVaultRecord): number {
-  return left.id.localeCompare(right.id)
-    || left.name.localeCompare(right.name)
-    || left.path.localeCompare(right.path);
-}
-
 function resolveVaultPlatform(vaultPath: string, currentPathKey: string): NodeJS.Platform {
   return inferPlatformFromPath(vaultPath, inferPlatformFromPath(currentPathKey));
 }
 
-function toSharedVaultRecord(vault: VaultConfig, currentPathKey: string): SharedVaultRecord {
+function resolveCurrentPathKeys(currentPathKey: string): CurrentPathKeys {
+  const platform = inferPlatformFromPath(currentPathKey);
+
+  return {
+    rawPathKey: normalizePathKey(currentPathKey, platform),
+    canonicalPathKey: normalizeExistingPathKey(currentPathKey, platform),
+  };
+}
+
+function toPublicSharedVaultRecord(vault: SharedVaultRecord): SharedVaultRecord {
+  return {
+    id: vault.id,
+    pathKey: vault.pathKey,
+    path: vault.path,
+    name: vault.name,
+    color: vault.color,
+    icon: vault.icon,
+    enabled: vault.enabled,
+    includePatterns: vault.includePatterns ? [...vault.includePatterns] : undefined,
+    excludePatterns: vault.excludePatterns ? [...vault.excludePatterns] : undefined,
+  };
+}
+
+function toSharedVaultCandidate(vault: VaultConfig, currentPathKey: string): SharedVaultCandidate {
   const platform = resolveVaultPlatform(vault.path, currentPathKey);
 
   return {
     id: vault.id,
-    pathKey: normalizePathKey(vault.path, platform),
+    pathKey: normalizeExistingPathKey(vault.path, platform),
+    rawPathKey: normalizePathKey(vault.path, platform),
     path: normalizePathDisplay(vault.path, platform),
     name: vault.name,
     color: sanitizeColor(vault.color),
@@ -106,14 +134,28 @@ function toSharedVaultRecord(vault: VaultConfig, currentPathKey: string): Shared
   };
 }
 
+function pickCanonicalVaultCandidate(
+  candidates: readonly SharedVaultCandidate[],
+  currentPathKeys: CurrentPathKeys,
+): SharedVaultCandidate {
+  const rawMatch = candidates.find((candidate) => candidate.rawPathKey === currentPathKeys.rawPathKey);
+  if (rawMatch) {
+    return rawMatch;
+  }
+
+  const canonicalMatch = candidates.find((candidate) => candidate.pathKey === currentPathKeys.canonicalPathKey);
+  return canonicalMatch ?? candidates[0];
+}
+
 function buildCanonicalVaults(local: MultiVaultSettings, currentPathKey: string): {
   vaults: SharedVaultRecord[];
   canonicalIdByAliasId: Map<string, string>;
 } {
-  const grouped = new Map<string, SharedVaultRecord[]>();
+  const currentPathKeys = resolveCurrentPathKeys(currentPathKey);
+  const grouped = new Map<string, SharedVaultCandidate[]>();
 
   for (const vault of local.vaults) {
-    const candidate = toSharedVaultRecord(vault, currentPathKey);
+    const candidate = toSharedVaultCandidate(vault, currentPathKey);
     const bucket = grouped.get(candidate.pathKey);
     if (bucket) {
       bucket.push(candidate);
@@ -122,13 +164,10 @@ function buildCanonicalVaults(local: MultiVaultSettings, currentPathKey: string)
     grouped.set(candidate.pathKey, [candidate]);
   }
 
-  const canonicalEntries: CanonicalVaultCandidate[] = [...grouped.values()].map((candidates) => {
-    const sorted = [...candidates].sort(compareVaultCandidates);
-    return {
-      canonical: sorted[0],
-      aliases: candidates.map((candidate) => candidate.id),
-    };
-  });
+  const canonicalEntries: CanonicalVaultCandidate[] = [...grouped.values()].map((candidates) => ({
+    canonical: pickCanonicalVaultCandidate(candidates, currentPathKeys),
+    aliases: candidates.map((candidate) => candidate.id),
+  }));
 
   canonicalEntries.sort((left, right) => left.canonical.pathKey.localeCompare(right.canonical.pathKey));
 
@@ -140,11 +179,7 @@ function buildCanonicalVaults(local: MultiVaultSettings, currentPathKey: string)
   }
 
   return {
-    vaults: canonicalEntries.map((entry) => ({
-      ...entry.canonical,
-      includePatterns: entry.canonical.includePatterns ? [...entry.canonical.includePatterns] : undefined,
-      excludePatterns: entry.canonical.excludePatterns ? [...entry.canonical.excludePatterns] : undefined,
-    })),
+    vaults: canonicalEntries.map((entry) => toPublicSharedVaultRecord(entry.canonical)),
     canonicalIdByAliasId,
   };
 }
@@ -220,7 +255,7 @@ function sanitizeProjectionVaults(projection: SharedSettingsProjection): SharedV
 
   for (const vault of projection.vaults) {
     const platform = inferPlatformFromPath(vault.pathKey || vault.path);
-    const pathKey = normalizePathKey(vault.pathKey || vault.path, platform);
+    const pathKey = normalizeExistingPathKey(vault.pathKey || vault.path, platform);
     const candidate: SharedVaultRecord = {
       id: vault.id,
       pathKey,
@@ -242,13 +277,8 @@ function sanitizeProjectionVaults(projection: SharedSettingsProjection): SharedV
   }
 
   return [...grouped.values()]
-    .map((candidates) => [...candidates].sort(compareVaultCandidates)[0])
-    .sort((left, right) => left.pathKey.localeCompare(right.pathKey))
-    .map((vault) => ({
-      ...vault,
-      includePatterns: vault.includePatterns ? [...vault.includePatterns] : undefined,
-      excludePatterns: vault.excludePatterns ? [...vault.excludePatterns] : undefined,
-    }));
+    .map((candidates) => toPublicSharedVaultRecord(candidates[0]))
+    .sort((left, right) => left.pathKey.localeCompare(right.pathKey));
 }
 
 export function projectSharedSettings(local: MultiVaultSettings, currentPathKey: string): SharedSettingsProjection {
@@ -275,7 +305,7 @@ export function applySharedProjection(local: MultiVaultSettings, projection: Sha
 
   for (const vault of local.vaults) {
     const platform = inferPlatformFromPath(vault.path);
-    existingVaultsByPathKey.set(normalizePathKey(vault.path, platform), vault);
+    existingVaultsByPathKey.set(normalizeExistingPathKey(vault.path, platform), vault);
   }
 
   return {

@@ -1,5 +1,6 @@
-import path from 'node:path';
+import { realpathSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
+import path from 'node:path';
 
 const WINDOWS_PATH_PREFIX = /^[a-zA-Z]:[\\/]/;
 const WINDOWS_UNC_PREFIX = /^(?:\\\\|\/\/)/;
@@ -39,6 +40,13 @@ function normalizeResolvedPath(input: string, platform: NodeJS.Platform, lowerca
   return normalized;
 }
 
+function isEnoentError(error: unknown): error is NodeJS.ErrnoException {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && (error as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
 export function normalizePathDisplay(input: string, platform: NodeJS.Platform): string {
   return normalizeResolvedPath(input, platform, false);
 }
@@ -47,11 +55,27 @@ export function normalizePathKey(input: string, platform: NodeJS.Platform): stri
   return normalizeResolvedPath(input, platform, true);
 }
 
+export function normalizeExistingPathKey(input: string, platform: NodeJS.Platform): string {
+  try {
+    return normalizePathKey(realpathSync(input), platform);
+  } catch (error) {
+    if (isEnoentError(error)) {
+      return normalizePathKey(input, platform);
+    }
+
+    throw error;
+  }
+}
+
 export async function normalizeVaultPath(input: string, platform: NodeJS.Platform): Promise<string> {
   try {
     return normalizePathKey(await realpath(input), platform);
-  } catch {
-    return normalizePathKey(input, platform);
+  } catch (error) {
+    if (isEnoentError(error)) {
+      return normalizePathKey(input, platform);
+    }
+
+    throw error;
   }
 }
 
