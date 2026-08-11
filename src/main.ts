@@ -1,4 +1,5 @@
-import { Plugin } from 'obsidian';
+import { randomUUID } from 'node:crypto';
+import { FileSystemAdapter, Plugin } from 'obsidian';
 import { DEFAULT_SETTINGS, MultiVaultSettings } from './types';
 import { VaultRegistry } from './vault-registry';
 import { Indexer } from './indexer/indexer';
@@ -21,6 +22,11 @@ import { VIEW_TYPE_SIDEBAR, SidebarView } from './views/sidebar-view';
 import { Notice, WorkspaceLeaf } from 'obsidian';
 import { MigrationController } from './migration/migration-controller';
 import { registerMigrationCommands } from './migration/migration-commands';
+import { SharedSettingsStore } from './shared-settings/shared-settings-store';
+import {
+  SharedSettingsService,
+  resolveSharedSettingsApplicationDataRoot,
+} from './shared-settings/shared-settings-service';
 
 export default class MultiVaultNavigatorPlugin extends Plugin {
   settings: MultiVaultSettings = Object.assign({}, DEFAULT_SETTINGS);
@@ -29,9 +35,31 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
   searchEngine: SearchEngine;
   fileOpener: FileOpener;
   migrationController: MigrationController;
+  sharedSettingsService: SharedSettingsService | null = null;
 
   async onload() {
     await this.loadSettings();
+
+    const adapter = this.app.vault.adapter;
+    if (adapter instanceof FileSystemAdapter) {
+      this.sharedSettingsService = new SharedSettingsService({
+        store: new SharedSettingsStore(resolveSharedSettingsApplicationDataRoot()),
+        settings: this.settings,
+        currentVaultPath: adapter.getBasePath(),
+        writerInstanceId: randomUUID(),
+        setInterval: (callback, milliseconds) => (
+          window.setInterval(callback, milliseconds) as unknown as ReturnType<typeof globalThis.setInterval>
+        ),
+        clearInterval: (handle) => window.clearInterval(handle as unknown as number),
+        registerInterval: (handle) => {
+          this.registerInterval(handle as unknown as number);
+        },
+      });
+      const startupSync = await this.sharedSettingsService.initializeAndApplyToSettings();
+      if (startupSync.kind === 'error') {
+        new Notice(`Shared configuration was not applied: ${startupSync.message}`);
+      }
+    }
 
     // Initialize core modules
     this.vaultRegistry = new VaultRegistry(this.app, this.settings);
@@ -213,6 +241,23 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
     // Add settings tab
     this.addSettingTab(new MultiVaultSettingsTab(this.app, this, this.vaultRegistry, this.indexer));
 
+    this.sharedSettingsService?.attachRuntime({
+      replaceVaults: (vaults) => {
+        this.vaultRegistry.replaceVaults(vaults);
+      },
+      saveLocalMirror: async (settings) => {
+        await this.saveData(settings);
+      },
+      onAppearanceChanged: () => {
+        this.refreshSharedAppearance();
+      },
+      onCatalogChanged: async () => {
+        await this.indexer.refreshIncremental(false);
+        this.refreshSearchEngine();
+        this.refreshSidebar();
+      },
+    });
+
     // Add ribbon icon
     this.addRibbonIcon('search', 'Multi-Vault Navigator', async () => {
       const leaf = this.app.workspace.getLeaf(true);
@@ -230,7 +275,7 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
   }
 
   onunload() {
-    // Cleanup if needed
+    this.sharedSettingsService?.dispose();
   }
 
   async loadSettings() {
@@ -249,6 +294,11 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
            leaf.view.render();
         }
      });
+  }
+
+  private refreshSharedAppearance(): void {
+    this.refreshSidebar();
+    this.app.workspace.trigger('layout-change');
   }
 
   private async activateSidebar() {

@@ -129,7 +129,11 @@ export class Indexer {
         const identity = this.identity(item.vault.id, item.entry.relativePath);
         scannedIdentities.add(identity);
         const previous = existing.get(identity);
-        if (previous && previous.mtime === item.entry.mtime && previous.size === item.entry.size) {
+        if (previous
+          && previous.mtime === item.entry.mtime
+          && previous.size === item.entry.size
+          && previous.vaultName === item.vault.name
+          && previous.absolutePath === item.entry.absolutePath) {
           unchanged.push(previous);
         } else {
           changed.push(item);

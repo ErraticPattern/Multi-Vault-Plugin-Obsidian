@@ -161,6 +161,24 @@ describe('Indexer.refreshIncremental', () => {
     expect(test.saves).toBe(1);
   });
 
+  it('reparses unchanged file contents when shared catalog paths change', async () => {
+    const movedEntry = {
+      ...entry('ideas', 'Stable.md', 10, 100),
+      absolutePath: 'D:/moved/ideas/Stable.md',
+    };
+    const test = harness([
+      indexed('ideas', 'Stable.md', 10, 100),
+    ], [
+      { vaultId: 'ideas', file: movedEntry },
+    ]);
+    await test.indexer.initialize();
+
+    await test.indexer.refreshIncremental();
+
+    expect(test.parsedPaths).toEqual(['ideas:Stable.md']);
+    expect(test.saves).toBe(1);
+  });
+
   it('allows a new refresh after the previous refresh settles', async () => {
     const test = harness([], [
       { vaultId: 'ideas', file: entry('ideas', 'A.md') },

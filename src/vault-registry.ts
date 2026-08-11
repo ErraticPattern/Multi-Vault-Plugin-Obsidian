@@ -31,6 +31,14 @@ export class VaultRegistry {
     return this.getVaults().filter(v => v.enabled);
   }
 
+  public replaceVaults(vaults: readonly VaultConfig[]): void {
+    this.vaults = new Map(vaults.map((vault) => [vault.id, {
+      ...vault,
+      includePatterns: vault.includePatterns ? [...vault.includePatterns] : undefined,
+      excludePatterns: vault.excludePatterns ? [...vault.excludePatterns] : undefined,
+    }]));
+  }
+
   public getVaultById(id: string): VaultConfig | undefined {
     return this.vaults.get(id);
   }
