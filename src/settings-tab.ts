@@ -32,6 +32,8 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
   indexer: Indexer;
   private newVaultPath = "";
   private excludeTimeout: number | null = null;
+  private declarativeRefresh: Promise<void> | null = null;
+  private suppressDeclarativeRefresh = false;
 
   constructor(app: App, plugin: MultiVaultNavigatorPlugin, vaultRegistry: VaultRegistry, indexer: Indexer) {
     super(app, plugin);
@@ -40,15 +42,64 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
     this.indexer = indexer;
   }
 
-  // Obsidian 1.13+ renders getSettingDefinitions() natively and never calls
-  // display(). 1.12.x has no declarative support and calls display() — render
-  // the same schema manually there so one codebase serves both versions.
+  // Obsidian 1.13+ renders getSettingDefinitions() natively and cannot await a
+  // refresh there, so the first definition request schedules one background
+  // apply and updates once if that changes visible state. 1.12.x still calls
+  // display() directly, so keep the manual async render path there.
   display(): void {
+    if (this.usesDeclarativeSettings()) return;
     void this.applyLatestAndRender(false);
   }
 
   update(): void {
+    if (this.usesDeclarativeSettings()) {
+      this.runNativeUpdate();
+      return;
+    }
     void this.applyLatestAndRender(true);
+  }
+
+  private usesDeclarativeSettings(): boolean {
+    return requireApiVersion('1.13.0');
+  }
+
+  private runNativeUpdate(): void {
+    const nativeUpdate = (PluginSettingTab.prototype as unknown as { update?: () => void }).update;
+    if (typeof nativeUpdate === 'function') nativeUpdate.call(this);
+  }
+
+  private scheduleDeclarativeRefresh(): void {
+    if (!this.usesDeclarativeSettings() || this.suppressDeclarativeRefresh || this.declarativeRefresh !== null) {
+      return;
+    }
+
+    const service = this.plugin.sharedSettingsService;
+    if (!service) return;
+
+    this.declarativeRefresh = (async () => {
+      try {
+        const result = await service.applyLatest(true);
+        if (result.kind === 'error') {
+          new Notice(`Shared configuration could not be refreshed: ${result.message}`);
+          return;
+        }
+        if (result.kind === 'unchanged') return;
+
+        this.suppressDeclarativeRefresh = true;
+        try {
+          this.update();
+        } finally {
+          void Promise.resolve().then(() => {
+            this.suppressDeclarativeRefresh = false;
+          });
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        new Notice(`Shared configuration could not be refreshed: ${message}`);
+      }
+    })().finally(() => {
+      this.declarativeRefresh = null;
+    });
   }
 
   private async applyLatestAndRender(useNativeUpdate: boolean): Promise<void> {
@@ -60,9 +111,8 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
       }
     }
 
-    const nativeUpdate = (PluginSettingTab.prototype as unknown as { update?: () => void }).update;
-    if (requireApiVersion('1.13.0')) {
-      if (useNativeUpdate && typeof nativeUpdate === 'function') nativeUpdate.call(this);
+    if (this.usesDeclarativeSettings()) {
+      if (useNativeUpdate) this.runNativeUpdate();
       return;
     }
     this.renderDefinitionsManually();
@@ -97,6 +147,7 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
   }
 
   getSettingDefinitions(): SettingDefinitionItem[] {
+    this.scheduleDeclarativeRefresh();
     const vaults = this.vaultRegistry.getVaults();
     const configuredVaultItems: SettingGroupItem[] = vaults.length === 0 ? [
       {

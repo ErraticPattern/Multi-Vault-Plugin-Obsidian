@@ -2,8 +2,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { App } from 'obsidian';
-import { FakeElement, Setting, __getOpenedModals, __resetObsidianMock } from './mocks/obsidian';
+import { App, PluginSettingTab } from 'obsidian';
+import {
+  FakeElement,
+  Setting,
+  __getOpenedModals,
+  __resetObsidianMock,
+  __setRequireApiVersionResult,
+} from './mocks/obsidian';
 
 import {
   IDEAS_APPROVED_PALETTE,
@@ -22,6 +28,19 @@ import type { VaultRegistry } from '../src/vault-registry';
 import type { Indexer } from '../src/indexer/indexer';
 
 const tempDirs: string[] = [];
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((fulfill) => {
+    resolve = fulfill;
+  });
+  return { promise, resolve };
+}
+
+async function flushPromises(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
 
 function ideasSettings(root: string): MultiVaultSettings {
   const vaults = [
@@ -74,6 +93,7 @@ async function createIdeasFixture(): Promise<{ root: string; settings: MultiVaul
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   __resetObsidianMock();
   await Promise.all(tempDirs.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
@@ -118,6 +138,101 @@ describe('shared settings view models', () => {
 });
 
 describe('shared settings controls', () => {
+  it('refreshes declarative shared settings once per display and rerenders only after applied changes', async () => {
+    __setRequireApiVersionResult(true);
+    const { settings } = await createIdeasFixture();
+    const applyLatest = vi.fn();
+    const refresh = deferred<{
+      kind: 'applied';
+      revision: number;
+      appearanceChanged: boolean;
+      catalogChanged: boolean;
+    } | {
+      kind: 'unchanged';
+      revision: number;
+    }>();
+    applyLatest.mockReturnValue(refresh.promise);
+    const plugin = {
+      settings,
+      sharedSettingsService: {
+        getStatus: () => ({ enabled: true, excluded: false }),
+        publish: vi.fn(),
+        applyLatest,
+      },
+      isSharedConfigurationEnabled: () => true,
+      setSharedConfigurationEnabled: vi.fn(),
+      syncSharedConfigurationNow: vi.fn(),
+      showSharedConfigurationStatus: vi.fn(),
+      saveSettings: vi.fn(),
+      refreshSearchEngine: vi.fn(),
+    } as unknown as MultiVaultNavigatorPlugin;
+    const registry = {
+      getVaults: () => settings.vaults,
+      getCurrentVaultId: () => 'ideas',
+    } as unknown as VaultRegistry;
+    const nativeUpdate = vi.spyOn(PluginSettingTab.prototype, 'update').mockImplementation(function (this: MultiVaultSettingsTab) {
+      this.getSettingDefinitions();
+    });
+    const tab = new MultiVaultSettingsTab(new App(), plugin, registry, {} as Indexer);
+    const updateSpy = vi.spyOn(tab, 'update');
+
+    tab.getSettingDefinitions();
+    tab.getSettingDefinitions();
+    expect(applyLatest).toHaveBeenCalledOnce();
+    expect(applyLatest).toHaveBeenCalledWith(true);
+    expect(updateSpy).not.toHaveBeenCalled();
+
+    refresh.resolve({
+      kind: 'applied',
+      revision: 1,
+      appearanceChanged: true,
+      catalogChanged: false,
+    });
+    await flushPromises();
+
+    expect(updateSpy).toHaveBeenCalledOnce();
+    expect(nativeUpdate).toHaveBeenCalledOnce();
+    expect(applyLatest).toHaveBeenCalledOnce();
+  });
+
+  it('does not rerender or loop when declarative shared settings are already current', async () => {
+    __setRequireApiVersionResult(true);
+    const { settings } = await createIdeasFixture();
+    const applyLatest = vi.fn(async () => ({ kind: 'unchanged' as const, revision: 7 }));
+    const plugin = {
+      settings,
+      sharedSettingsService: {
+        getStatus: () => ({ enabled: true, excluded: false }),
+        publish: vi.fn(),
+        applyLatest,
+      },
+      isSharedConfigurationEnabled: () => true,
+      setSharedConfigurationEnabled: vi.fn(),
+      syncSharedConfigurationNow: vi.fn(),
+      showSharedConfigurationStatus: vi.fn(),
+      saveSettings: vi.fn(),
+      refreshSearchEngine: vi.fn(),
+    } as unknown as MultiVaultNavigatorPlugin;
+    const registry = {
+      getVaults: () => settings.vaults,
+      getCurrentVaultId: () => 'ideas',
+    } as unknown as VaultRegistry;
+    const nativeUpdate = vi.spyOn(PluginSettingTab.prototype, 'update').mockImplementation(function (this: MultiVaultSettingsTab) {
+      this.getSettingDefinitions();
+    });
+    const tab = new MultiVaultSettingsTab(new App(), plugin, registry, {} as Indexer);
+    const updateSpy = vi.spyOn(tab, 'update');
+
+    tab.getSettingDefinitions();
+    tab.getSettingDefinitions();
+    await flushPromises();
+
+    expect(applyLatest).toHaveBeenCalledOnce();
+    expect(applyLatest).toHaveBeenCalledWith(true);
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect(nativeUpdate).not.toHaveBeenCalled();
+  });
+
   it('offers all Virtual Linker styles and publishes explicit shared patches', async () => {
     const { settings } = await createIdeasFixture();
     settings.sharedSettingsEnabled = true;

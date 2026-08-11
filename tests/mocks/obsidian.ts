@@ -107,8 +107,14 @@ export class PluginSettingTab {
   update(): void {}
 }
 
+let requireApiVersionResult = false;
+
 export function requireApiVersion(_version: string): boolean {
-  return false;
+  return requireApiVersionResult;
+}
+
+export function __setRequireApiVersionResult(value: boolean): void {
+  requireApiVersionResult = value;
 }
 
 export class ButtonComponent {
@@ -375,6 +381,7 @@ export class SuggestModal<T> extends FuzzySuggestModal<T> {}
 export function __resetObsidianMock(): void {
   notices.length = 0;
   openedModals.length = 0;
+  requireApiVersionResult = false;
 }
 
 export function __getNotices(): string[] {
