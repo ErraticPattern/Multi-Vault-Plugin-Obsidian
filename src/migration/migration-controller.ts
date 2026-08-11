@@ -6,7 +6,7 @@ import { resolveDestinationPath } from './destination-paths';
 import { collectMigrationSnapshot } from './obsidian-snapshot';
 import { planMoveOrCopy, planStandaloneRelink } from './migration-planner';
 import type { MigrationPlan } from './migration-types';
-import { executeMigrationPlan, type MigrationExecutionResult, type MigrationIo } from './migration-transaction';
+import { DestinationExistsError, executeMigrationPlan, type MigrationExecutionResult, type MigrationIo } from './migration-transaction';
 import { ObsidianMigrationIo } from './obsidian-migration-io';
 import { isMarkdownExtension } from './migration-view-models';
 import {
@@ -54,10 +54,19 @@ export class MigrationController {
     targetFolder: string,
     mode: 'move' | 'copy',
     preserveLinks: boolean,
+    overwriteDestination = false,
   ): Promise<MigrationPlan> {
     const sourceVault = this.requireCurrentVault();
     const targetVault = this.requireVault(targetVaultId);
     const destination = resolveDestinationPath(targetVault.path, targetFolder, activeFile.name);
+    const io = this.ioFactory();
+    const destinationExists = await io.destinationExists(destination.absolutePath);
+    if (destinationExists && !overwriteDestination) {
+      throw new DestinationExistsError(destination.absolutePath);
+    }
+    const destinationOriginalContent = destinationExists
+      ? await io.readDestination(destination.absolutePath)
+      : null;
     const notes = await collectMigrationSnapshot(this.app, activeFile.path);
     const plan = planMoveOrCopy({
       mode,
@@ -90,7 +99,11 @@ export class MigrationController {
     ];
     return this.withMetadata(
       activeFile,
-      plan,
+      {
+        ...plan,
+        destinationPolicy: destinationExists && overwriteDestination ? 'overwrite-reviewed' : 'create-only',
+        destinationOriginalContent,
+      },
       indexMutations,
       targetVault.id,
       destination.relativePath,

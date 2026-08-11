@@ -59,6 +59,18 @@ export function isMigrationPlanFingerprintCurrent(
   return JSON.stringify(current.backlinks) === JSON.stringify(fingerprint.backlinks);
 }
 
+export function isMigrationPlanDestinationCurrent(
+  plan: MigrationPlan,
+  destinationExists: boolean,
+  destinationOriginalContent: string | null,
+): boolean {
+  if (!plan.destinationAbsolutePath) return true;
+  if (plan.destinationPolicy === 'overwrite-reviewed') {
+    return destinationExists && destinationOriginalContent === (plan.destinationOriginalContent ?? null);
+  }
+  return !destinationExists;
+}
+
 export class PreparedPlanCache {
   private entry: { key: string; plan: MigrationPlan } | null = null;
   private pending: { key: string; promise: Promise<MigrationPlan> } | null = null;

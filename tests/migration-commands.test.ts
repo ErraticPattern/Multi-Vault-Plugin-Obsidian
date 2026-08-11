@@ -10,6 +10,8 @@ import {
   resolveRelinkTargetRelativePath,
 } from '../src/migration/migration-controller';
 import type { MigrationIo } from '../src/migration/migration-transaction';
+import { DestinationExistsError } from '../src/migration/migration-transaction';
+import { resolveDestinationPath } from '../src/migration/destination-paths';
 import {
   getFolderSuggestions,
   getTargetNoteSuggestions,
@@ -156,6 +158,65 @@ describe('migration picker and review view models', () => {
 });
 
 describe('MigrationController', () => {
+  it('rejects collisions unless overwrite is enabled and captures reviewed destination state', async () => {
+    const source = testFile('Projects/Zerotier.md');
+    const app = {
+      vault: {
+        getMarkdownFiles: () => [source],
+        getFileByPath: (filePath: string) => filePath === source.path ? source : null,
+        read: async (file: TFile) => file.path === source.path ? 'Uses [[EEG]].' : '',
+      },
+      metadataCache: {
+        resolvedLinks: {},
+        getFileCache: () => ({ links: [] }),
+        getFirstLinkpathDest: () => null,
+      },
+    };
+    const vaults: VaultConfig[] = [
+      { id: 'ideas', name: 'ideas', path: 'C:/vaults/ideas', enabled: true },
+      { id: 'math', name: 'mathematics', path: 'C:/vaults/mathematics', enabled: true },
+    ];
+    const indexer = {
+      getIndexedFiles: () => [source].map((file) => ({
+        id: file.path, vaultId: 'ideas', vaultName: 'ideas',
+        absolutePath: `C:/vaults/ideas/${file.path}`, relativePath: file.path,
+        basename: file.basename, extension: '.md', mtime: 0, size: 0,
+      })),
+      buildFullIndex: async () => {},
+      applyMutations: async () => {},
+    };
+    const registry = {
+      getCurrentVaultId: () => 'ideas',
+      getVaultById: (id: string) => vaults.find((vault) => vault.id === id),
+    };
+    const io = new ControllerIo();
+    io.source.set(source.path, 'Uses [[EEG]].');
+    const destination = resolveDestinationPath('C:/vaults/mathematics', 'Notes', source.name);
+    io.destination.set(destination.absolutePath, 'existing target');
+    const controller = new MigrationController(
+      app as never,
+      registry as never,
+      indexer as never,
+      () => io,
+    );
+
+    await expect(controller.planMoveCopy(source, 'math', 'Notes', 'move', true, false))
+      .rejects.toBeInstanceOf(DestinationExistsError);
+
+    const overwritten = await controller.planMoveCopy(source, 'math', 'Notes', 'copy', true, true);
+    expect(overwritten).toMatchObject({
+      destinationPolicy: 'overwrite-reviewed',
+      destinationOriginalContent: 'existing target',
+    });
+
+    io.destination.delete(destination.absolutePath);
+    const clean = await controller.planMoveCopy(source, 'math', 'Notes', 'copy', true, true);
+    expect(clean).toMatchObject({
+      destinationPolicy: 'create-only',
+      destinationOriginalContent: null,
+    });
+  });
+
   it('plans a nested-folder move and incrementally updates only changed index entries', async () => {
     const source = testFile('Projects/Zerotier.md');
     const eeg = testFile('Notes/EEG.md');
