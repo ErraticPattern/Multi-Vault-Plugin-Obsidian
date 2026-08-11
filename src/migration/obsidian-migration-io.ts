@@ -1,6 +1,7 @@
 import { TFile, type App } from 'obsidian';
-import { access, mkdir, open, readFile, rm, writeFile } from 'fs/promises';
+import { access, mkdir, open, readFile, rename, rm, writeFile } from 'fs/promises';
 import * as path from 'path';
+import { randomBytes } from 'crypto';
 import { DestinationOwnershipError, StaleMigrationPlanError, type MigrationIo } from './migration-transaction';
 
 export class ObsidianMigrationIo implements MigrationIo {
@@ -44,7 +45,14 @@ export class ObsidianMigrationIo implements MigrationIo {
     if (current !== expectedOriginal) {
       throw new StaleMigrationPlanError(absolutePath);
     }
-    await writeFile(absolutePath, content, 'utf8');
+    const stagePath = `${absolutePath}.mvp-stage-${randomBytes(8).toString('hex')}`;
+    try {
+      await writeFile(stagePath, content, 'utf8');
+      await rename(stagePath, absolutePath);
+    } catch (error: unknown) {
+      await rm(stagePath, { force: true }).catch(() => undefined);
+      throw error;
+    }
   }
 
   async restoreDestination(
@@ -53,14 +61,18 @@ export class ObsidianMigrationIo implements MigrationIo {
     originalContent: string | null,
   ): Promise<void> {
     const current = await readFile(absolutePath, 'utf8').catch(() => null);
-    if (current !== writtenContent) {
-      throw new DestinationOwnershipError(absolutePath);
-    }
-    if (originalContent === null) {
-      await rm(absolutePath, { force: true });
+    if (current === writtenContent) {
+      if (originalContent === null) {
+        await rm(absolutePath, { force: true });
+        return;
+      }
+      await writeFile(absolutePath, originalContent, 'utf8');
       return;
     }
-    await writeFile(absolutePath, originalContent, 'utf8');
+    if (current === originalContent) {
+      return;
+    }
+    throw new DestinationOwnershipError(absolutePath);
   }
 
   async readSourceFile(vaultPath: string): Promise<string> {

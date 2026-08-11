@@ -1,11 +1,17 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync } from 'node:fs';
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { writeFile as writeFileViaProdSpecifier } from 'fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { TFile } from 'obsidian';
 import { DestinationOwnershipError, StaleMigrationPlanError } from '../src/migration/migration-transaction';
 import { ObsidianMigrationIo } from '../src/migration/obsidian-migration-io';
+
+vi.mock('fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs/promises')>();
+  return { ...actual, writeFile: vi.fn(actual.writeFile) };
+});
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
@@ -131,5 +137,42 @@ describe('ObsidianMigrationIo', () => {
     await expect(io.restoreDestination(destination, 'updated', 'existing'))
       .rejects.toBeInstanceOf(DestinationOwnershipError);
     expect(await io.readDestination(destination)).toBe('tampered by another process');
+  });
+
+  it('treats an already-absent destination as successfully restored when it was never created', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
+    roots.push(root);
+    const app = { vault: {}, fileManager: {} };
+    const io = new ObsidianMigrationIo(app as never);
+    const destination = path.join(root, 'NeverCreated.md');
+
+    await expect(io.restoreDestination(destination, 'content that failed to write', null))
+      .resolves.toBeUndefined();
+    expect(await io.destinationExists(destination)).toBe(false);
+  });
+
+  it('leaves the original destination untouched when a mid-overwrite write fails', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
+    roots.push(root);
+    const app = { vault: {}, fileManager: {} };
+    const io = new ObsidianMigrationIo(app as never);
+    const destination = path.join(root, 'Existing.md');
+    await writeFile(destination, 'existing', 'utf8');
+
+    const mockedWriteFile = vi.mocked(writeFileViaProdSpecifier);
+    mockedWriteFile.mockImplementationOnce(async (filePath, data, encoding) => {
+      await writeFile(filePath as string, String(data).slice(0, 2), encoding as BufferEncoding);
+      throw new Error('disk full');
+    });
+    try {
+      await expect(io.writeDestination(destination, 'updated', 'existing'))
+        .rejects.toThrow('disk full');
+    } finally {
+      mockedWriteFile.mockClear();
+    }
+
+    expect(await io.readDestination(destination)).toBe('existing');
+    const entries = await readdir(root);
+    expect(entries).toEqual(['Existing.md']);
   });
 });
