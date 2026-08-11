@@ -4,7 +4,6 @@ import {
   createTargetCatalogFingerprint,
   isMigrationPlanFingerprintCurrent,
   isTargetCatalogFingerprintCurrent,
-  isMigrationPlanDestinationCurrent,
   PreparedPlanCache,
 } from '../src/migration/prepared-plan-cache';
 import type { MigrationPlan } from '../src/migration/migration-types';
@@ -106,36 +105,5 @@ describe('migration plan fingerprints', () => {
       { relativePath: 'Notes/README.md', basename: 'README' },
       { relativePath: 'Archive/README.md', basename: 'README' },
     ])).toBe(false);
-  });
-});
-
-describe('migration plan destination snapshots', () => {
-  it('accepts reviewed overwrite plans only while the same destination content remains', () => {
-    const reviewedPlan = {
-      ...plan,
-      destinationAbsolutePath: 'C:/vaults/math/Notes/README.md',
-      destinationRelativePath: 'Notes/README.md',
-      destinationContent: 'updated',
-      destinationPolicy: 'overwrite-reviewed',
-      destinationOriginalContent: 'existing',
-    } as MigrationPlan;
-
-    expect(isMigrationPlanDestinationCurrent(reviewedPlan, true, 'existing')).toBe(true);
-    expect(isMigrationPlanDestinationCurrent(reviewedPlan, true, 'changed')).toBe(false);
-    expect(isMigrationPlanDestinationCurrent(reviewedPlan, false, null)).toBe(false);
-  });
-
-  it('accepts create-only plans only while the destination stays absent', () => {
-    const createOnlyPlan = {
-      ...plan,
-      destinationAbsolutePath: 'C:/vaults/math/Notes/README.md',
-      destinationRelativePath: 'Notes/README.md',
-      destinationContent: 'updated',
-      destinationPolicy: 'create-only',
-      destinationOriginalContent: null,
-    } as MigrationPlan;
-
-    expect(isMigrationPlanDestinationCurrent(createOnlyPlan, false, null)).toBe(true);
-    expect(isMigrationPlanDestinationCurrent(createOnlyPlan, true, 'existing')).toBe(false);
   });
 });

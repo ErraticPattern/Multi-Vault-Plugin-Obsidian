@@ -5,6 +5,7 @@ import {
   executeMigrationPlan,
   MigrationExecutionError,
   StaleMigrationPlanError,
+  type DestinationOwnershipToken,
   type MigrationIo,
 } from '../src/migration/migration-transaction';
 import type { MigrationPlan } from '../src/migration/migration-types';
@@ -14,6 +15,7 @@ class MemoryIo implements MigrationIo {
   destination = new Map<string, string>();
   log: string[] = [];
   failDestinationWrite = false;
+  failDestinationAfterPublishingPlannedContent = false;
   failSourceWriteAt: number | null = null;
   failTrash = false;
   failTrashAfterDelete = false;
@@ -28,24 +30,36 @@ class MemoryIo implements MigrationIo {
   async readDestination(absolutePath: string): Promise<string> {
     return this.destination.get(absolutePath) ?? '';
   }
-  async writeDestination(absolutePath: string, content: string, _expectedOriginal: string | null): Promise<void> {
+  async writeDestination(
+    absolutePath: string,
+    content: string,
+    expectedOriginal: string | null,
+  ): Promise<DestinationOwnershipToken> {
     this.log.push('write-destination');
-    this.destination.set(absolutePath, this.failDestinationWrite ? 'concurrent destination' : content);
+    const failedContent = this.failDestinationAfterPublishingPlannedContent
+      ? content
+      : 'concurrent destination';
+    this.destination.set(absolutePath, this.failDestinationWrite ? failedContent : content);
     if (this.failDestinationWrite) throw new Error('destination write failed');
+    return { absolutePath, writtenContent: content, originalContent: expectedOriginal } as unknown as DestinationOwnershipToken;
   }
   async restoreDestination(
     absolutePath: string,
-    writtenContent: string,
-    originalContent: string | null,
+    ownership: DestinationOwnershipToken,
   ): Promise<void> {
     this.log.push('restore-destination');
-    if (this.destination.get(absolutePath) !== writtenContent) {
+    const token = ownership as unknown as {
+      absolutePath: string;
+      writtenContent: string;
+      originalContent: string | null;
+    };
+    if (token.absolutePath !== absolutePath || this.destination.get(absolutePath) !== token.writtenContent) {
       throw new DestinationOwnershipError(absolutePath);
     }
-    if (originalContent === null) {
+    if (token.originalContent === null) {
       this.destination.delete(absolutePath);
     } else {
-      this.destination.set(absolutePath, originalContent);
+      this.destination.set(absolutePath, token.originalContent);
     }
   }
   async readSourceFile(vaultPath: string): Promise<string> {
@@ -183,6 +197,34 @@ describe('executeMigrationPlan rollback and stale protection', () => {
     expect(io.destination.get('C:/target/Notes/Zerotier.md')).toBe('concurrent destination');
     expect(io.source.get('Notes/Index.md')).toBe('See [[Zerotier]].');
     expect(io.source.has('Projects/Zerotier.md')).toBe(true);
+  });
+
+  it('does not claim a failed create publication when concurrent content equals the plan', async () => {
+    const io = readyIo();
+    io.failDestinationWrite = true;
+    io.failDestinationAfterPublishingPlannedContent = true;
+
+    await expect(executeMigrationPlan(plan('move'), io)).rejects
+      .toBeInstanceOf(MigrationExecutionError);
+
+    expect(io.destination.get('C:/target/Notes/Zerotier.md')).toBe('Uses [[ideas::EEG]].');
+    expect(io.log).not.toContain('restore-destination');
+  });
+
+  it('does not claim a failed overwrite publication when stale content equals the plan', async () => {
+    const io = readyIo();
+    io.failDestinationWrite = true;
+    io.failDestinationAfterPublishingPlannedContent = true;
+    const overwritePlan = plan('move');
+    overwritePlan.destinationPolicy = 'overwrite-reviewed';
+    overwritePlan.destinationOriginalContent = 'existing';
+    io.destination.set(overwritePlan.destinationAbsolutePath!, 'existing');
+
+    await expect(executeMigrationPlan(overwritePlan, io)).rejects
+      .toBeInstanceOf(MigrationExecutionError);
+
+    expect(io.destination.get(overwritePlan.destinationAbsolutePath!)).toBe('Uses [[ideas::EEG]].');
+    expect(io.log).not.toContain('restore-destination');
   });
 
   it('restores all attempted backlink edits and removes destination when a later edit fails', async () => {

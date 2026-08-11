@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync } from 'node:fs';
-import { readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { writeFile as writeFileViaProdSpecifier } from 'fs/promises';
+import { readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import {
+  lstat as lstatViaProdSpecifier,
+  open as openViaProdSpecifier,
+  readFile as readFileViaProdSpecifier,
+  writeFile as writeFileViaProdSpecifier,
+} from 'fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { TFile } from 'obsidian';
@@ -10,7 +15,13 @@ import { ObsidianMigrationIo } from '../src/migration/obsidian-migration-io';
 
 vi.mock('fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs/promises')>();
-  return { ...actual, writeFile: vi.fn(actual.writeFile) };
+  return {
+    ...actual,
+    lstat: vi.fn(actual.lstat),
+    open: vi.fn(actual.open),
+    readFile: vi.fn(actual.readFile),
+    writeFile: vi.fn(actual.writeFile),
+  };
 });
 
 const roots: string[] = [];
@@ -57,7 +68,7 @@ describe('ObsidianMigrationIo', () => {
     const destination = path.join(root, 'Nested', 'Source.md');
 
     expect(await io.destinationExists(destination)).toBe(false);
-    await io.writeDestination(destination, 'destination', null);
+    const destinationOwnership = await io.writeDestination(destination, 'destination', null);
     expect(await io.destinationExists(destination)).toBe(true);
     expect(await io.readDestination(destination)).toBe('destination');
     expect(await io.readSourceFile(sourceFile.path)).toBe('original');
@@ -67,9 +78,25 @@ describe('ObsidianMigrationIo', () => {
     expect(trashed).toBe(sourceFile.path);
     await io.restoreSourceFile('Notes/Restored.md', 'restored');
     expect(files.get('Notes/Restored.md')).toBe('restored');
-    await io.restoreDestination(destination, 'destination', null);
+    await io.restoreDestination(destination, destinationOwnership);
     expect(await io.destinationExists(destination)).toBe(false);
     await expect(readFile(`${destination}.bak`)).rejects.toThrow();
+  });
+
+  it('propagates non-ENOENT errors while checking destination existence', async () => {
+    const io = new ObsidianMigrationIo({ vault: {}, fileManager: {} } as never);
+    const denied = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    vi.mocked(lstatViaProdSpecifier).mockRejectedValueOnce(denied);
+
+    await expect(io.destinationExists('C:/unreadable/Existing.md')).rejects.toBe(denied);
+  });
+
+  it('propagates non-ENOENT errors while reading a destination', async () => {
+    const io = new ObsidianMigrationIo({ vault: {}, fileManager: {} } as never);
+    const transient = Object.assign(new Error('temporary I/O failure'), { code: 'EIO' });
+    vi.mocked(readFileViaProdSpecifier).mockRejectedValueOnce(transient);
+
+    await expect(io.readDestination('C:/unstable/Existing.md')).rejects.toBe(transient);
   });
 
   it('rejects missing and non-Markdown source files', async () => {
@@ -84,6 +111,20 @@ describe('ObsidianMigrationIo', () => {
 
     await expect(io.readSourceFile('Missing.md')).rejects.toThrow(/not found/i);
     await expect(io.readSourceFile(image.path)).rejects.toThrow(/Markdown/i);
+  });
+
+  it('leaves a same-content concurrent destination untouched when create publication gets EEXIST', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
+    roots.push(root);
+    const io = new ObsidianMigrationIo({ vault: {}, fileManager: {} } as never);
+    const destination = path.join(root, 'Concurrent.md');
+    await writeFile(destination, 'planned content', 'utf8');
+
+    await expect(io.writeDestination(destination, 'planned content', null))
+      .rejects.toMatchObject({ code: 'EEXIST' });
+
+    expect(await readFile(destination, 'utf8')).toBe('planned content');
+    expect(await readdir(root)).toEqual(['Concurrent.md']);
   });
 
   it('overwrites a destination only when the current content matches the expected original', async () => {
@@ -135,6 +176,93 @@ describe('ObsidianMigrationIo', () => {
     expect(await readdir(root)).toEqual(['Existing.md']);
   });
 
+  it('refuses create cleanup when the path is replaced between validation and deletion', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
+    roots.push(root);
+    const destination = path.join(root, 'Created.md');
+    const displaced = path.join(root, 'Created-by-transaction.md');
+    let raceInjected = false;
+    const io = new ObsidianMigrationIo(
+      { vault: {}, fileManager: {} } as never,
+      {
+        beforeCreateRemoval: async () => {
+          raceInjected = true;
+          await rename(destination, displaced);
+          await writeFile(destination, 'transaction content', 'utf8');
+        },
+      },
+    );
+    const ownership = await io.writeDestination(destination, 'transaction content', null);
+
+    await expect(io.restoreDestination(destination, ownership))
+      .rejects.toBeInstanceOf(DestinationOwnershipError);
+
+    expect(raceInjected).toBe(true);
+    expect(await readFile(destination, 'utf8')).toBe('transaction content');
+    expect(await readFile(displaced, 'utf8')).toBe('transaction content');
+  });
+
+  it('refuses overwrite restoration when the path is replaced before descriptor mutation', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
+    roots.push(root);
+    const destination = path.join(root, 'Existing.md');
+    const displaced = path.join(root, 'Published-by-transaction.md');
+    await writeFile(destination, 'existing', 'utf8');
+    let raceInjected = false;
+    const io = new ObsidianMigrationIo(
+      { vault: {}, fileManager: {} } as never,
+      {
+        beforeOverwriteRestore: async () => {
+          raceInjected = true;
+          await rename(destination, displaced);
+          await writeFile(destination, 'updated', 'utf8');
+        },
+      },
+    );
+    const ownership = await io.writeDestination(destination, 'updated', 'existing');
+
+    await expect(io.restoreDestination(destination, ownership))
+      .rejects.toBeInstanceOf(DestinationOwnershipError);
+
+    expect(raceInjected).toBe(true);
+    expect(await readFile(destination, 'utf8')).toBe('updated');
+    expect(await readFile(displaced, 'utf8')).toBe('updated');
+  });
+
+  it('propagates non-ENOENT errors while opening a published destination for rollback', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
+    roots.push(root);
+    const destination = path.join(root, 'Created.md');
+    const io = new ObsidianMigrationIo({ vault: {}, fileManager: {} } as never);
+    const ownership = await io.writeDestination(destination, 'created', null);
+    const denied = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    vi.mocked(openViaProdSpecifier).mockRejectedValueOnce(denied);
+
+    await expect(io.restoreDestination(destination, ownership)).rejects.toBe(denied);
+    expect(await readFile(destination, 'utf8')).toBe('created');
+  });
+
+  it('rejects stale same-content publication without returning rollback ownership', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
+    roots.push(root);
+    const destination = path.join(root, 'Existing.md');
+    const io = new ObsidianMigrationIo(
+      { vault: {}, fileManager: {} } as never,
+      {
+        beforeOverwritePublication: async () => {
+          await writeFile(destination, 'updated', 'utf8');
+        },
+      },
+    );
+    await writeFile(destination, 'existing', 'utf8');
+
+    await expect(io.writeDestination(destination, 'updated', 'existing'))
+      .rejects.toBeInstanceOf(StaleMigrationPlanError);
+
+    expect(await readFile(destination, 'utf8')).toBe('updated');
+    expect(await readdir(root)).toEqual(['Existing.md']);
+  });
+
   it('restores the original content of an overwritten destination', async () => {
     const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
     roots.push(root);
@@ -142,9 +270,9 @@ describe('ObsidianMigrationIo', () => {
     const io = new ObsidianMigrationIo(app as never);
     const destination = path.join(root, 'Existing.md');
     await writeFile(destination, 'existing', 'utf8');
-    await io.writeDestination(destination, 'updated', 'existing');
+    const ownership = await io.writeDestination(destination, 'updated', 'existing');
 
-    await io.restoreDestination(destination, 'updated', 'existing');
+    await io.restoreDestination(destination, ownership);
 
     expect(await io.readDestination(destination)).toBe('existing');
   });
@@ -155,22 +283,26 @@ describe('ObsidianMigrationIo', () => {
     const app = { vault: {}, fileManager: {} };
     const io = new ObsidianMigrationIo(app as never);
     const destination = path.join(root, 'Existing.md');
+    await writeFile(destination, 'existing', 'utf8');
+    const ownership = await io.writeDestination(destination, 'updated', 'existing');
     await writeFile(destination, 'tampered by another process', 'utf8');
 
-    await expect(io.restoreDestination(destination, 'updated', 'existing'))
+    await expect(io.restoreDestination(destination, ownership))
       .rejects.toBeInstanceOf(DestinationOwnershipError);
     expect(await io.readDestination(destination)).toBe('tampered by another process');
   });
 
-  it('treats an already-absent destination as successfully restored when it was never created', async () => {
+  it('reports ownership loss when a published destination is absent during rollback', async () => {
     const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
     roots.push(root);
     const app = { vault: {}, fileManager: {} };
     const io = new ObsidianMigrationIo(app as never);
-    const destination = path.join(root, 'NeverCreated.md');
+    const destination = path.join(root, 'Removed.md');
+    const ownership = await io.writeDestination(destination, 'created', null);
+    await rm(destination);
 
-    await expect(io.restoreDestination(destination, 'content that failed to write', null))
-      .resolves.toBeUndefined();
+    await expect(io.restoreDestination(destination, ownership))
+      .rejects.toBeInstanceOf(DestinationOwnershipError);
     expect(await io.destinationExists(destination)).toBe(false);
   });
 

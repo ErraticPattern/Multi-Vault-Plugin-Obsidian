@@ -6,7 +6,11 @@ import path from 'node:path';
 import { TFile } from 'obsidian';
 import { planMoveOrCopy, planStandaloneRelink, type LinkSnapshot, type NoteSnapshot } from '../src/migration/migration-planner';
 import { ObsidianMigrationIo } from '../src/migration/obsidian-migration-io';
-import { executeMigrationPlan, type MigrationIo } from '../src/migration/migration-transaction';
+import {
+  executeMigrationPlan,
+  type DestinationOwnershipToken,
+  type MigrationIo,
+} from '../src/migration/migration-transaction';
 
 const temporaryRoots: string[] = [];
 
@@ -20,15 +24,21 @@ class FixtureIo implements MigrationIo {
     try { await readFile(absolutePath); return true; } catch { return false; }
   }
   async readDestination(absolutePath: string): Promise<string> { return readFile(absolutePath, 'utf8'); }
-  async writeDestination(absolutePath: string, content: string, expectedOriginal: string | null): Promise<void> {
+  async writeDestination(
+    absolutePath: string,
+    content: string,
+    expectedOriginal: string | null,
+  ): Promise<DestinationOwnershipToken> {
     await mkdir(path.dirname(absolutePath), { recursive: true });
     if (expectedOriginal === null) {
       await writeFile(absolutePath, content, { flag: 'wx' });
-      return;
+    } else {
+      await writeFile(absolutePath, content, 'utf8');
     }
-    await writeFile(absolutePath, content, 'utf8');
+    return { originalContent: expectedOriginal } as unknown as DestinationOwnershipToken;
   }
-  async restoreDestination(absolutePath: string, _writtenContent: string, originalContent: string | null): Promise<void> {
+  async restoreDestination(absolutePath: string, ownership: DestinationOwnershipToken): Promise<void> {
+    const { originalContent } = ownership as unknown as { originalContent: string | null };
     if (originalContent === null) {
       await rm(absolutePath, { force: true });
       return;

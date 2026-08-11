@@ -8,13 +8,23 @@ export type MigrationReviewConfirmationResult = 'confirmed' | 'awaiting-overwrit
 export async function handleMigrationReviewConfirmation(
   plan: MigrationPlan,
   onConfirm: () => Promise<void>,
-  openOverwriteConfirm: (destinationPath: string, onConfirm: () => Promise<void>) => void,
+  openOverwriteConfirm: (
+    destinationPath: string,
+    onConfirm: () => Promise<void>,
+    onClose: () => void,
+  ) => void,
+  setReviewConfirmDisabled: (disabled: boolean) => void,
 ): Promise<MigrationReviewConfirmationResult> {
   if (plan.destinationPolicy === 'overwrite-reviewed') {
     if (!plan.destinationAbsolutePath) {
       throw new Error('Overwrite review is missing the destination path');
     }
-    openOverwriteConfirm(plan.destinationAbsolutePath, onConfirm);
+    setReviewConfirmDisabled(true);
+    openOverwriteConfirm(
+      plan.destinationAbsolutePath,
+      onConfirm,
+      () => setReviewConfirmDisabled(false),
+    );
     return 'awaiting-overwrite-confirm';
   }
   await onConfirm();
@@ -76,19 +86,17 @@ export class MigrationReviewModal extends Modal {
         .onClick(async () => {
           button.setDisabled(true);
           try {
-            const result = await handleMigrationReviewConfirmation(
+            await handleMigrationReviewConfirmation(
               this.plan,
               async () => {
                 await this.onConfirm();
                 this.close();
               },
-              (destinationPath, onConfirm) => {
-                new OverwriteConfirmModal(this.app, destinationPath, onConfirm).open();
+              (destinationPath, onConfirm, onClose) => {
+                new OverwriteConfirmModal(this.app, destinationPath, onConfirm, onClose).open();
               },
+              (disabled) => button.setDisabled(disabled),
             );
-            if (result === 'awaiting-overwrite-confirm') {
-              button.setDisabled(false);
-            }
           } catch {
             button.setDisabled(false);
           }

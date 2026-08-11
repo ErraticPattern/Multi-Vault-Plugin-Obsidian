@@ -10,7 +10,7 @@ import {
   MigrationController,
   resolveRelinkTargetRelativePath,
 } from '../src/migration/migration-controller';
-import type { MigrationIo } from '../src/migration/migration-transaction';
+import type { DestinationOwnershipToken, MigrationIo } from '../src/migration/migration-transaction';
 import { DestinationExistsError } from '../src/migration/migration-transaction';
 import { resolveDestinationPath } from '../src/migration/destination-paths';
 import {
@@ -44,10 +44,14 @@ class ControllerIo implements MigrationIo {
   destination = new Map<string, string>();
   async destinationExists(path: string) { return this.destination.has(path); }
   async readDestination(path: string) { return this.destination.get(path) ?? ''; }
-  async writeDestination(path: string, content: string) { this.destination.set(path, content); }
-  async restoreDestination(path: string, _writtenContent: string, originalContent: string | null) {
-    if (originalContent === null) this.destination.delete(path);
-    else this.destination.set(path, originalContent);
+  async writeDestination(path: string, content: string, originalContent: string | null) {
+    this.destination.set(path, content);
+    return { path, originalContent } as unknown as DestinationOwnershipToken;
+  }
+  async restoreDestination(path: string, ownership: DestinationOwnershipToken) {
+    const token = ownership as unknown as { originalContent: string | null };
+    if (token.originalContent === null) this.destination.delete(path);
+    else this.destination.set(path, token.originalContent);
   }
   async readSourceFile(path: string) { return this.source.get(path)!; }
   async writeSourceFile(path: string, content: string) { this.source.set(path, content); }
@@ -57,6 +61,7 @@ class ControllerIo implements MigrationIo {
 
 type MockButton = {
   buttonText: string;
+  disabled: boolean;
   triggerClick(): Promise<unknown>;
 };
 
@@ -262,6 +267,8 @@ describe('migration review confirmation routing', () => {
   it('opens a second confirmation only for reviewed overwrites', async () => {
     const calls: string[] = [];
     let deferredConfirm: (() => Promise<void>) | null = null;
+    let closeOverwriteConfirm: (() => void) | null = null;
+    let reviewConfirmDisabled = false;
 
     await handleMigrationReviewConfirmation(
       {
@@ -271,14 +278,26 @@ describe('migration review confirmation routing', () => {
       async () => {
         calls.push('execute');
       },
-      (destinationPath, onConfirm) => {
+      (destinationPath, onConfirm, onClose) => {
         calls.push(`prompt:${destinationPath}`);
         deferredConfirm = onConfirm;
+        closeOverwriteConfirm = onClose;
+      },
+      (disabled) => {
+        reviewConfirmDisabled = disabled;
       },
     );
 
     expect(calls).toEqual(['prompt:C:/vaults/mathematics/Notes/Zerotier.md']);
     expect(deferredConfirm).not.toBeNull();
+    expect(reviewConfirmDisabled).toBe(true);
+
+    if (!closeOverwriteConfirm) {
+      throw new Error('Expected overwrite close callback');
+    }
+    const cancelOverwrite = closeOverwriteConfirm as () => void;
+    cancelOverwrite();
+    expect(reviewConfirmDisabled).toBe(false);
 
     if (!deferredConfirm) {
       throw new Error('Expected overwrite confirmation callback');
@@ -303,6 +322,9 @@ describe('migration review confirmation routing', () => {
       },
       () => {
         calls.push('prompt');
+      },
+      (disabled) => {
+        reviewConfirmDisabled = disabled;
       },
     );
 

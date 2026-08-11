@@ -15,6 +15,7 @@ export class OverwriteConfirmModal extends Modal {
     app: App,
     private readonly destinationPath: string,
     private readonly onConfirm: () => Promise<void>,
+    private readonly onClosed: () => void = () => undefined,
   ) {
     super(app);
   }
@@ -44,5 +45,6 @@ export class OverwriteConfirmModal extends Modal {
 
   onClose(): void {
     this.contentEl.empty();
+    this.onClosed();
   }
 }

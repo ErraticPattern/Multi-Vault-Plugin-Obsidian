@@ -1,5 +1,12 @@
 import type { MigrationPlan } from './migration-types';
 
+const destinationOwnershipBrand: unique symbol = Symbol('destination-ownership');
+
+/** Opaque proof that one MigrationIo instance successfully published a destination. */
+export interface DestinationOwnershipToken {
+  readonly [destinationOwnershipBrand]: true;
+}
+
 export interface MigrationIo {
   destinationExists(absolutePath: string): Promise<boolean>;
   readDestination(absolutePath: string): Promise<string>;
@@ -7,11 +14,10 @@ export interface MigrationIo {
     absolutePath: string,
     content: string,
     expectedOriginal: string | null,
-  ): Promise<void>;
+  ): Promise<DestinationOwnershipToken>;
   restoreDestination(
     absolutePath: string,
-    writtenContent: string,
-    originalContent: string | null,
+    ownership: DestinationOwnershipToken,
   ): Promise<void>;
   readSourceFile(vaultPath: string): Promise<string>;
   writeSourceFile(vaultPath: string, content: string): Promise<void>;
@@ -106,14 +112,13 @@ export async function executeMigrationPlan(
 
   const destinationOriginal = await verifyDestination(io, plan);
 
-  let destinationWriteAttempted = false;
+  let destinationOwnership: DestinationOwnershipToken | null = null;
   let sourceTrashAttempted = false;
   const attemptedBacklinks: typeof plan.backlinkEdits = [];
   try {
     if (plan.destinationAbsolutePath) {
-      destinationWriteAttempted = true;
       const policy = plan.destinationPolicy ?? 'create-only';
-      await io.writeDestination(
+      destinationOwnership = await io.writeDestination(
         plan.destinationAbsolutePath,
         plan.destinationContent!,
         policy === 'overwrite-reviewed' ? destinationOriginal : null,
@@ -149,12 +154,11 @@ export async function executeMigrationPlan(
         rollbackErrors.push(asError(rollbackError));
       }
     }
-    if (destinationWriteAttempted && plan.destinationAbsolutePath) {
+    if (destinationOwnership && plan.destinationAbsolutePath) {
       try {
         await io.restoreDestination(
           plan.destinationAbsolutePath,
-          plan.destinationContent!,
-          destinationOriginal,
+          destinationOwnership,
         );
       } catch (rollbackError: unknown) {
         rollbackErrors.push(asError(rollbackError));
