@@ -1,3 +1,5 @@
+import type { SharedSettingsManifest } from './shared-settings-types';
+
 export class SharedSettingsStoreError extends Error {
   readonly cause?: unknown;
 
@@ -22,6 +24,21 @@ export class UnsupportedSharedSettingsVersionError extends SharedSettingsStoreEr
 }
 
 export class SharedSettingsLockTimeoutError extends SharedSettingsStoreError {}
+
+export class SharedSettingsLockCompromisedError extends SharedSettingsStoreError {}
+
+export class SharedSettingsCommittedWithLockReleaseError extends SharedSettingsStoreError {
+  readonly committedManifest: SharedSettingsManifest;
+
+  constructor(committedManifest: SharedSettingsManifest, options: { cause: unknown }) {
+    super(
+      `Shared settings revision ${committedManifest.revision} was committed, but its lock could not be released; `
+        + 'this operation must not be retried blindly.',
+      options,
+    );
+    this.committedManifest = committedManifest;
+  }
+}
 
 export class SharedSettingsNotInitializedError extends SharedSettingsStoreError {}
 

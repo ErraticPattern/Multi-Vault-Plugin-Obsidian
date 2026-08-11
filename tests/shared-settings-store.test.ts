@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { fork, type ChildProcess } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -12,6 +13,8 @@ import {
 import {
   InvalidSharedSettingsError,
   MalformedSharedSettingsError,
+  SharedSettingsCommittedWithLockReleaseError,
+  SharedSettingsLockCompromisedError,
   SharedSettingsLockTimeoutError,
   UnsupportedSharedSettingsVersionError,
 } from '../src/shared-settings/shared-settings-errors';
@@ -65,6 +68,30 @@ async function createStore(
 async function readRawManifest(directory: string): Promise<Record<string, unknown>> {
   const content = await readFile(path.join(directory, SHARED_SETTINGS_MANIFEST_FILE_NAME), 'utf8');
   return JSON.parse(content) as Record<string, unknown>;
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+async function waitForChildMessage(child: ChildProcess, expected: unknown): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Timed out waiting for child message ${String(expected)}.`)), 5_000);
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on('message', (message) => {
+      if (message === expected) {
+        clearTimeout(timer);
+        resolve();
+      }
+    });
+  });
 }
 
 afterEach(async () => {
@@ -148,6 +175,44 @@ describe('SharedSettingsStore', () => {
     });
   });
 
+  it('preserves unknown fields while upsert replaces every known vault field', async () => {
+    const { directory, store } = await createStore();
+    await store.initialize(createProjection(), 'initializer');
+
+    const raw = await readRawManifest(directory);
+    (raw.vaults as Array<Record<string, unknown>>)[0].futureVaultField = { retained: true };
+    await writeFile(
+      path.join(directory, SHARED_SETTINGS_MANIFEST_FILE_NAME),
+      `${JSON.stringify(raw, null, 2)}\n`,
+      'utf8',
+    );
+
+    await store.patch({
+      kind: 'upsert-vault',
+      vault: {
+        id: 'ideas',
+        pathKey: 'd:/moved/ideas',
+        path: 'D:/Moved/Ideas',
+        name: 'Moved Ideas',
+        icon: 'lightbulb',
+        enabled: false,
+        includePatterns: ['Current'],
+      },
+    }, 'writer');
+
+    const savedVault = (await readRawManifest(directory)).vaults as Array<Record<string, unknown>>;
+    expect(savedVault[0]).toEqual({
+      id: 'ideas',
+      pathKey: 'd:/moved/ideas',
+      path: 'D:/Moved/Ideas',
+      name: 'Moved Ideas',
+      icon: 'lightbulb',
+      enabled: false,
+      includePatterns: ['Current'],
+      futureVaultField: { retained: true },
+    });
+  });
+
   it('preserves unknown extensions and unknown fields during read-modify-write', async () => {
     const { directory, store } = await createStore();
     await store.initialize(createProjection(), 'initializer');
@@ -168,6 +233,55 @@ describe('SharedSettingsStore', () => {
     expect(saved.extensions).toEqual({ thirdParty: { version: 2, values: ['kept'] } });
     expect(saved.futureTopLevelField).toEqual({ enabled: true });
     expect((saved.vaults as Array<Record<string, unknown>>)[0].futureVaultField).toBe('kept');
+  });
+
+  it('configures the default lock lease for bounded retries and a frequent heartbeat', async () => {
+    let capturedOptions: import('proper-lockfile').LockOptions | undefined;
+    const { store } = await createStore({
+      lockFile: async (_file, options) => {
+        capturedOptions = options;
+        return async () => undefined;
+      },
+    });
+
+    await store.initialize(createProjection(), 'initializer');
+
+    expect(capturedOptions).toMatchObject({
+      stale: 30_000,
+      update: 5_000,
+      realpath: false,
+      retries: {
+        retries: 40,
+        factor: 1,
+        minTimeout: 50,
+        maxTimeout: 50,
+        randomize: false,
+      },
+    });
+  });
+
+  it('keeps promise serialization within one store when the lock adapter resolves immediately', async () => {
+    const { directory, store: healthyStore } = await createStore();
+    await healthyStore.initialize(createProjection(), 'initializer');
+    let activeLeases = 0;
+    let maximumActiveLeases = 0;
+    const store = new SharedSettingsStore(directory, {
+      lockFile: async () => {
+        activeLeases += 1;
+        maximumActiveLeases = Math.max(maximumActiveLeases, activeLeases);
+        return async () => {
+          activeLeases -= 1;
+        };
+      },
+    });
+
+    const results = await Promise.all([
+      store.patch({ kind: 'set-enabled', enabled: false }, 'writer-a'),
+      store.patch({ kind: 'set-enabled', enabled: true }, 'writer-b'),
+    ]);
+
+    expect(maximumActiveLeases).toBe(1);
+    expect(results.map((result) => result.revision)).toEqual([2, 3]);
   });
 
   it('merges disjoint concurrent patches from independent store instances', async () => {
@@ -201,6 +315,23 @@ describe('SharedSettingsStore', () => {
     expect(['#111111', '#222222']).toContain(saved?.vaults[0].color);
   });
 
+  it('rejects unknown runtime patch discriminants without rewriting', async () => {
+    const { directory, store } = await createStore();
+    await store.initialize(createProjection(), 'initializer');
+    const manifestPath = path.join(directory, SHARED_SETTINGS_MANIFEST_FILE_NAME);
+    const original = await readFile(manifestPath, 'utf8');
+    const unknownPatch = {
+      ...await store.read(),
+      kind: 'replace-manifest',
+      enabled: false,
+    } as unknown as SharedSettingsPatch;
+
+    await expect(store.patch(unknownPatch, 'untrusted-caller')).rejects.toBeInstanceOf(
+      InvalidSharedSettingsError,
+    );
+    await expect(readFile(manifestPath, 'utf8')).resolves.toBe(original);
+  });
+
   it('times out after bounded retry while a live lock exists', async () => {
     const { directory, store } = await createStore({
       lockTimeoutMs: 80,
@@ -209,7 +340,7 @@ describe('SharedSettingsStore', () => {
     });
     await store.initialize(createProjection(), 'initializer');
     const lockPath = path.join(directory, SHARED_SETTINGS_LOCK_FILE_NAME);
-    await writeFile(lockPath, 'other-owner', { flag: 'wx' });
+    await mkdir(lockPath);
 
     const startedAt = Date.now();
     await expect(
@@ -217,14 +348,14 @@ describe('SharedSettingsStore', () => {
     ).rejects.toBeInstanceOf(SharedSettingsLockTimeoutError);
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(60);
     expect(Date.now() - startedAt).toBeLessThan(1_000);
-    await expect(readFile(lockPath, 'utf8')).resolves.toBe('other-owner');
+    await expect(stat(lockPath)).resolves.toBeDefined();
   });
 
   it('rechecks and expires a lock older than thirty seconds', async () => {
     const { directory, store } = await createStore({ retryMinMs: 1, retryMaxMs: 2 });
     await store.initialize(createProjection(), 'initializer');
     const lockPath = path.join(directory, SHARED_SETTINGS_LOCK_FILE_NAME);
-    await writeFile(lockPath, 'abandoned-owner', { flag: 'wx' });
+    await mkdir(lockPath);
     const oldTime = new Date(Date.now() - 31_000);
     await utimes(lockPath, oldTime, oldTime);
 
@@ -232,6 +363,106 @@ describe('SharedSettingsStore', () => {
 
     expect(saved).toMatchObject({ revision: 2, enabled: false, writerInstanceId: 'new-owner' });
     await expect(stat(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('keeps an active heartbeat lease beyond the stale threshold', async () => {
+    const enteredPublisher = deferred();
+    const releasePublisher = deferred();
+    const { directory, store: healthyStore } = await createStore();
+    await healthyStore.initialize(createProjection(), 'initializer');
+    const holder = new SharedSettingsStore(directory, {
+      staleLockMs: 2_000,
+      lockUpdateMs: 1_000,
+      beforePublishStagedFile: async () => {
+        enteredPublisher.resolve();
+        await releasePublisher.promise;
+      },
+    });
+
+    const heldPatch = holder.patch({ kind: 'set-enabled', enabled: false }, 'holder');
+    await enteredPublisher.promise;
+    const lockPath = path.join(directory, SHARED_SETTINGS_LOCK_FILE_NAME);
+    const initialMtime = (await stat(lockPath)).mtimeMs;
+    await new Promise((resolve) => setTimeout(resolve, 2_300));
+    expect((await stat(lockPath)).mtimeMs).toBeGreaterThan(initialMtime);
+
+    const contender = new SharedSettingsStore(directory, {
+      lockTimeoutMs: 80,
+      staleLockMs: 2_000,
+      lockUpdateMs: 1_000,
+      retryMinMs: 5,
+      retryMaxMs: 10,
+    });
+    await expect(
+      contender.patch({ kind: 'set-enabled', enabled: true }, 'contender'),
+    ).rejects.toBeInstanceOf(SharedSettingsLockTimeoutError);
+
+    releasePublisher.resolve();
+    await expect(heldPatch).resolves.toMatchObject({ revision: 2, enabled: false });
+  }, 10_000);
+
+  it('surfaces replacement compromise, does not publish, and does not remove the replacement lock', async () => {
+    const enteredPublisher = deferred();
+    const releasePublisher = deferred();
+    const compromised = deferred();
+    const { directory, store: healthyStore } = await createStore();
+    await healthyStore.initialize(createProjection(), 'initializer');
+    const store = new SharedSettingsStore(directory, {
+      staleLockMs: 2_000,
+      lockUpdateMs: 1_000,
+      beforePublishStagedFile: async () => {
+        enteredPublisher.resolve();
+        await releasePublisher.promise;
+      },
+      onLockCompromised: () => compromised.resolve(),
+    });
+    const manifestPath = path.join(directory, SHARED_SETTINGS_MANIFEST_FILE_NAME);
+    const oldContent = await readFile(manifestPath, 'utf8');
+
+    const patch = store.patch({ kind: 'set-enabled', enabled: false }, 'compromised-writer');
+    await enteredPublisher.promise;
+    const lockPath = path.join(directory, SHARED_SETTINGS_LOCK_FILE_NAME);
+    await rm(lockPath, { recursive: true });
+    await mkdir(lockPath);
+    const replacementTime = new Date(Date.now() + 10_000);
+    await utimes(lockPath, replacementTime, replacementTime);
+    await Promise.race([
+      compromised.promise,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Lock was not compromised.')), 3_000)),
+    ]);
+    releasePublisher.resolve();
+
+    await expect(patch).rejects.toBeInstanceOf(SharedSettingsLockCompromisedError);
+    await expect(readFile(manifestPath, 'utf8')).resolves.toBe(oldContent);
+    await expect(stat(lockPath)).resolves.toBeDefined();
+  }, 10_000);
+
+  it('contends with a real proper-lockfile owner in a child process', async () => {
+    const { directory, store } = await createStore({
+      lockTimeoutMs: 80,
+      retryMinMs: 5,
+      retryMaxMs: 10,
+    });
+    await store.initialize(createProjection(), 'initializer');
+    const child = fork(
+      path.join(process.cwd(), 'tests', 'fixtures', 'proper-lockfile-holder.cjs'),
+      [path.join(directory, SHARED_SETTINGS_MANIFEST_FILE_NAME)],
+      { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] },
+    );
+
+    try {
+      await waitForChildMessage(child, 'locked');
+      await expect(
+        store.patch({ kind: 'set-enabled', enabled: false }, 'parent'),
+      ).rejects.toBeInstanceOf(SharedSettingsLockTimeoutError);
+      await expect(store.read()).resolves.toMatchObject({ revision: 1, enabled: true });
+      child.send('release');
+      await new Promise<void>((resolve, reject) => {
+        child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`Child exited with ${code}.`)));
+      });
+    } finally {
+      if (!child.killed && child.exitCode === null) child.kill();
+    }
   });
 
   it('rejects malformed JSON without treating it as an absent manifest', async () => {
@@ -285,6 +516,83 @@ describe('SharedSettingsStore', () => {
       store.patch({ kind: 'set-enabled', enabled: false }, 'old-plugin'),
     ).rejects.toBeInstanceOf(UnsupportedSharedSettingsVersionError);
     await expect(readFile(manifestPath, 'utf8')).resolves.toBe(content);
+  });
+
+  it('preserves a primary operation error when release also fails', async () => {
+    const primaryError = new Error('publication failed first');
+    const releaseError = new Error('release failed second');
+    const { directory, store: healthyStore } = await createStore();
+    await healthyStore.initialize(createProjection(), 'initializer');
+    const original = await readFile(path.join(directory, SHARED_SETTINGS_MANIFEST_FILE_NAME), 'utf8');
+    const failingStore = new SharedSettingsStore(directory, {
+      lockFile: async () => async () => {
+        throw releaseError;
+      },
+      publishStagedFile: async () => {
+        throw primaryError;
+      },
+    });
+
+    await expect(
+      failingStore.patch({ kind: 'set-enabled', enabled: false }, 'writer'),
+    ).rejects.toBe(primaryError);
+    await expect(readFile(path.join(directory, SHARED_SETTINGS_MANIFEST_FILE_NAME), 'utf8')).resolves.toBe(original);
+  });
+
+  it('reports a committed publication with release failure as unsafe to retry', async () => {
+    const releaseError = new Error('release failed after commit');
+    const { directory, store: healthyStore } = await createStore();
+    await healthyStore.initialize(createProjection(), 'initializer');
+    const failingStore = new SharedSettingsStore(directory, {
+      lockFile: async () => async () => {
+        throw releaseError;
+      },
+    });
+
+    let caught: unknown;
+    try {
+      await failingStore.patch({ kind: 'set-enabled', enabled: false }, 'writer');
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(SharedSettingsCommittedWithLockReleaseError);
+    expect(caught).toMatchObject({
+      cause: releaseError,
+      committedManifest: { revision: 2, enabled: false, writerInstanceId: 'writer' },
+    });
+    expect((caught as Error).message).toContain('must not be retried blindly');
+    await expect(healthyStore.read()).resolves.toMatchObject({ revision: 2, enabled: false });
+  });
+
+  it('publishes complete old-or-new JSON through the default publisher during concurrent reads', async () => {
+    const { directory, store } = await createStore();
+    await store.initialize(createProjection(), 'initializer');
+    const manifestPath = path.join(directory, SHARED_SETTINGS_MANIFEST_FILE_NAME);
+    const observed: Array<Record<string, unknown>> = [];
+
+    for (let index = 0; index < 20; index += 1) {
+      const concurrentReads = Array.from({ length: 20 }, async () => (
+        JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>
+      ));
+      const publication = store.patch(
+        { kind: 'set-enabled', enabled: index % 2 !== 0 },
+        `writer-${index}`,
+      );
+      observed.push(...await Promise.all(concurrentReads));
+      await publication;
+    }
+    observed.push(await readRawManifest(directory));
+
+    expect(observed.length).toBe(401);
+    for (const manifest of observed) {
+      expect(manifest.schemaVersion).toBe(1);
+      expect(typeof manifest.revision).toBe('number');
+      expect(manifest.enabled).toBe((manifest.revision as number) % 2 === 1);
+      expect(Array.isArray(manifest.vaults)).toBe(true);
+      expect(manifest.virtualLinks).toBeTypeOf('object');
+    }
+    expect(observed.at(-1)).toMatchObject({ revision: 21, enabled: true });
   });
 
   it('retains the complete old manifest and cleans lock and staging files after write interruption', async () => {

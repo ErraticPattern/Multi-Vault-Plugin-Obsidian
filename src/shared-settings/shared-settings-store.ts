@@ -4,15 +4,18 @@ import {
   open,
   readFile,
   rename,
-  stat,
   unlink,
 } from 'node:fs/promises';
 import path from 'node:path';
+import * as properLockfile from 'proper-lockfile';
+import type { LockOptions } from 'proper-lockfile';
 
 import {
   InvalidSharedSettingsError,
   MalformedSharedSettingsError,
   SharedSettingsAlreadyInitializedError,
+  SharedSettingsCommittedWithLockReleaseError,
+  SharedSettingsLockCompromisedError,
   SharedSettingsLockTimeoutError,
   SharedSettingsNotInitializedError,
   UnsupportedSharedSettingsVersionError,
@@ -32,7 +35,8 @@ const DEFAULT_LOCK_TIMEOUT_MS = 2_000;
 const DEFAULT_STALE_LOCK_MS = 30_000;
 const DEFAULT_RETRY_MIN_MS = 10;
 const DEFAULT_RETRY_MAX_MS = 50;
-const WINDOWS_RENAME_RETRY_MS = 500;
+const DEFAULT_LOCK_UPDATE_MS = 5_000;
+const WINDOWS_RENAME_RETRY_MS = 2_000;
 const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
 const VALID_COLOR_MODES: readonly VirtualLinkColorMode[] = [
   'off',
@@ -56,17 +60,26 @@ export type SharedSettingsPatch =
   | { kind: 'set-virtual-link-targets'; sourceVaultId: string; targetVaultIds: string[] }
   | { kind: 'set-virtual-link-style'; mode: VirtualLinkColorMode; intensity: number };
 
+type ReleaseLock = () => Promise<void>;
+type LockFile = (file: string, options: LockOptions) => Promise<ReleaseLock>;
+
 export interface SharedSettingsStoreOptions {
   lockTimeoutMs?: number;
   staleLockMs?: number;
+  lockUpdateMs?: number;
   retryMinMs?: number;
   retryMaxMs?: number;
   now?: () => Date;
   publishStagedFile?: (stagingPath: string, manifestPath: string) => Promise<void>;
+  lockFile?: LockFile;
+  beforePublishStagedFile?: () => Promise<void>;
+  onLockCompromised?: (error: Error) => void;
 }
 
-interface LockOwnership {
-  token: string;
+interface LockLease {
+  release: ReleaseLock;
+  assertActive: () => void;
+  getCompromiseError: () => Error | undefined;
 }
 
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
@@ -199,6 +212,15 @@ function cloneVault(vault: SharedVaultRecord): SharedVaultRecord {
   };
 }
 
+function mergeVaultForUpsert(existing: SharedVaultRecord, replacement: SharedVaultRecord): SharedVaultRecord {
+  const merged = { ...existing, ...cloneVault(replacement) };
+  const optionalFields = ['color', 'icon', 'includePatterns', 'excludePatterns'] as const;
+  for (const field of optionalFields) {
+    if (replacement[field] === undefined) delete merged[field];
+  }
+  return merged;
+}
+
 function toggleId(ids: readonly string[], id: string, included: boolean): string[] {
   if (included) return ids.includes(id) ? [...ids] : [...ids, id];
   return ids.filter((candidate) => candidate !== id);
@@ -235,7 +257,9 @@ function applyPatch(manifest: SharedSettingsManifest, patch: SharedSettingsPatch
       const existingIndex = manifest.vaults.findIndex((vault) => vault.id === patch.vault.id);
       const vaults = existingIndex < 0
         ? [...manifest.vaults, cloneVault(patch.vault)]
-        : manifest.vaults.map((vault, index) => index === existingIndex ? cloneVault(patch.vault) : vault);
+        : manifest.vaults.map((vault, index) => (
+          index === existingIndex ? mergeVaultForUpsert(vault, patch.vault) : vault
+        ));
       return { ...manifest, vaults };
     }
 
@@ -351,20 +375,15 @@ function applyPatch(manifest: SharedSettingsManifest, patch: SharedSettingsPatch
         },
       };
 
-    default: {
-      const exhaustive: never = patch;
-      return exhaustive;
-    }
+    default:
+      throw new InvalidSharedSettingsError(
+        `Invalid shared settings patch: unsupported kind ${JSON.stringify((patch as { kind?: unknown }).kind)}.`,
+      );
   }
 }
 
 function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-function retryDelay(minimum: number, maximum: number): number {
-  if (maximum <= minimum) return minimum;
-  return minimum + Math.floor(Math.random() * (maximum - minimum + 1));
 }
 
 async function defaultPublishStagedFile(stagingPath: string, manifestPath: string): Promise<void> {
@@ -397,21 +416,33 @@ export class SharedSettingsStore {
 
   private readonly lockTimeoutMs: number;
   private readonly staleLockMs: number;
+  private readonly lockUpdateMs: number;
   private readonly retryMinMs: number;
   private readonly retryMaxMs: number;
   private readonly now: () => Date;
   private readonly publishStagedFile: (stagingPath: string, manifestPath: string) => Promise<void>;
+  private readonly lockFile: LockFile;
+  private readonly beforePublishStagedFile: () => Promise<void>;
+  private readonly onLockCompromised?: (error: Error) => void;
+  private writeQueue: Promise<void> = Promise.resolve();
 
   constructor(directory: string, options: SharedSettingsStoreOptions = {}) {
     this.directory = path.resolve(directory);
     this.manifestPath = path.join(this.directory, SHARED_SETTINGS_MANIFEST_FILE_NAME);
     this.lockPath = path.join(this.directory, SHARED_SETTINGS_LOCK_FILE_NAME);
     this.lockTimeoutMs = Math.max(0, Math.min(DEFAULT_LOCK_TIMEOUT_MS, options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS));
-    this.staleLockMs = Math.max(0, options.staleLockMs ?? DEFAULT_STALE_LOCK_MS);
+    this.staleLockMs = Math.max(2_000, options.staleLockMs ?? DEFAULT_STALE_LOCK_MS);
+    this.lockUpdateMs = Math.max(
+      1_000,
+      Math.min(this.staleLockMs / 2, options.lockUpdateMs ?? DEFAULT_LOCK_UPDATE_MS),
+    );
     this.retryMinMs = Math.max(1, options.retryMinMs ?? DEFAULT_RETRY_MIN_MS);
     this.retryMaxMs = Math.max(this.retryMinMs, options.retryMaxMs ?? DEFAULT_RETRY_MAX_MS);
     this.now = options.now ?? (() => new Date());
     this.publishStagedFile = options.publishStagedFile ?? defaultPublishStagedFile;
+    this.lockFile = options.lockFile ?? properLockfile.lock;
+    this.beforePublishStagedFile = options.beforePublishStagedFile ?? (async () => undefined);
+    this.onLockCompromised = options.onLockCompromised;
   }
 
   async read(): Promise<SharedSettingsManifest | null> {
@@ -438,170 +469,186 @@ export class SharedSettingsStore {
   }
 
   async initialize(seed: SharedSettingsProjection, writerInstanceId: string): Promise<SharedSettingsManifest> {
-    await mkdir(this.directory, { recursive: true });
-    return this.withLock(async () => {
-      const existing = await this.read();
-      if (existing) {
-        throw new SharedSettingsAlreadyInitializedError(
-          `Shared settings manifest already exists at ${this.manifestPath}.`,
-        );
-      }
+    return this.serializeWrite(async () => {
+      await mkdir(this.directory, { recursive: true });
+      return this.withLock(async (assertLockActive) => {
+        const existing = await this.read();
+        if (existing) {
+          throw new SharedSettingsAlreadyInitializedError(
+            `Shared settings manifest already exists at ${this.manifestPath}.`,
+          );
+        }
 
-      const manifest = {
-        ...seed,
-        schemaVersion: SHARED_SETTINGS_SCHEMA_VERSION,
-        revision: 1,
-        updatedAt: this.now().toISOString(),
-        writerInstanceId,
-      } as SharedSettingsManifest;
-      validateManifest(manifest);
-      await this.writeManifest(manifest);
-      return manifest;
+        const manifest = {
+          ...seed,
+          schemaVersion: SHARED_SETTINGS_SCHEMA_VERSION,
+          revision: 1,
+          updatedAt: this.now().toISOString(),
+          writerInstanceId,
+        } as SharedSettingsManifest;
+        validateManifest(manifest);
+        await this.writeManifest(manifest, assertLockActive);
+        return manifest;
+      });
     });
   }
 
   async patch(patch: SharedSettingsPatch, writerInstanceId: string): Promise<SharedSettingsManifest> {
-    await mkdir(this.directory, { recursive: true });
-    return this.withLock(async () => {
-      const latest = await this.read();
-      if (!latest) {
-        throw new SharedSettingsNotInitializedError(
-          `Shared settings manifest does not exist at ${this.manifestPath}.`,
-        );
-      }
+    return this.serializeWrite(async () => {
+      await mkdir(this.directory, { recursive: true });
+      return this.withLock(async (assertLockActive) => {
+        const latest = await this.read();
+        if (!latest) {
+          throw new SharedSettingsNotInitializedError(
+            `Shared settings manifest does not exist at ${this.manifestPath}.`,
+          );
+        }
 
-      const next = {
-        ...applyPatch(latest, patch),
-        revision: latest.revision + 1,
-        updatedAt: this.now().toISOString(),
-        writerInstanceId,
-      };
-      validateManifest(next);
-      await this.writeManifest(next);
-      return next;
+        const next = {
+          ...applyPatch(latest, patch),
+          revision: latest.revision + 1,
+          updatedAt: this.now().toISOString(),
+          writerInstanceId,
+        };
+        validateManifest(next);
+        await this.writeManifest(next, assertLockActive);
+        return next;
+      });
     });
   }
 
-  private async withLock<T>(operation: () => Promise<T>): Promise<T> {
-    const ownership = await this.acquireLock();
-    try {
-      return await operation();
-    } finally {
-      await this.releaseLock(ownership);
-    }
+  private serializeWrite<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.writeQueue.then(operation, operation);
+    this.writeQueue = result.then(() => undefined, () => undefined);
+    return result;
   }
 
-  private async acquireLock(): Promise<LockOwnership> {
+  private async withLock(
+    operation: (assertLockActive: () => void) => Promise<SharedSettingsManifest>,
+  ): Promise<SharedSettingsManifest> {
+    const lease = await this.acquireLock();
+    let operationFailed = false;
+    let operationError: unknown;
+    let result!: SharedSettingsManifest;
+
+    try {
+      result = await operation(lease.assertActive);
+    } catch (error) {
+      operationFailed = true;
+      operationError = error;
+    }
+
+    let releaseError: unknown;
+    try {
+      await lease.release();
+    } catch (error) {
+      releaseError = error;
+    }
+
+    if (operationFailed) throw operationError;
+
+    const compromiseError = lease.getCompromiseError();
+    if (releaseError !== undefined || compromiseError !== undefined) {
+      throw new SharedSettingsCommittedWithLockReleaseError(result, {
+        cause: compromiseError ?? releaseError,
+      });
+    }
+    return result;
+  }
+
+  private async acquireLock(): Promise<LockLease> {
     const startedAt = Date.now();
-    const deadline = startedAt + this.lockTimeoutMs;
+    const retryInterval = Math.max(
+      this.retryMinMs,
+      Math.min(this.retryMaxMs, Math.max(1, this.lockTimeoutMs)),
+    );
+    const retries = this.lockTimeoutMs === 0 ? 0 : Math.floor(this.lockTimeoutMs / retryInterval);
+    let compromiseError: Error | undefined;
 
-    while (true) {
-      const token = `${process.pid}:${randomUUID()}`;
-      try {
-        const handle = await open(this.lockPath, 'wx', 0o600);
-        try {
-          await handle.writeFile(token, 'utf8');
-          await handle.sync();
-        } catch (error) {
-          await handle.close();
-          await unlink(this.lockPath).catch(() => undefined);
-          throw error;
-        }
-        await handle.close();
-        return { token };
-      } catch (error) {
-        if (!isNodeError(error, 'EEXIST')) throw error;
-      }
-
-      if (await this.expireStaleLock()) continue;
-      if (Date.now() >= deadline) {
+    let release: ReleaseLock;
+    try {
+      release = await this.lockFile(this.manifestPath, {
+        stale: this.staleLockMs,
+        update: this.lockUpdateMs,
+        realpath: false,
+        retries: {
+          retries,
+          factor: 1,
+          minTimeout: retryInterval,
+          maxTimeout: retryInterval,
+          randomize: false,
+        },
+        onCompromised: (error) => {
+          compromiseError = error;
+          try {
+            this.onLockCompromised?.(error);
+          } catch {
+            // A diagnostic callback must not replace the actual compromise error.
+          }
+        },
+      });
+    } catch (error) {
+      if (isNodeError(error, 'ELOCKED')) {
         throw new SharedSettingsLockTimeoutError(
           `Timed out after ${Date.now() - startedAt}ms waiting for ${this.lockPath}.`,
+          { cause: error },
         );
       }
-
-      const delay = Math.min(
-        retryDelay(this.retryMinMs, this.retryMaxMs),
-        Math.max(1, deadline - Date.now()),
-      );
-      await sleep(delay);
+      throw error;
     }
+
+    return {
+      release,
+      getCompromiseError: () => compromiseError,
+      assertActive: () => {
+        if (compromiseError) {
+          throw new SharedSettingsLockCompromisedError(
+            `The shared settings lock for ${this.manifestPath} was compromised before publication.`,
+            { cause: compromiseError },
+          );
+        }
+      },
+    };
   }
 
-  private async expireStaleLock(): Promise<boolean> {
-    let first;
-    try {
-      first = await stat(this.lockPath);
-    } catch (error) {
-      if (isNodeError(error, 'ENOENT')) return true;
-      throw error;
-    }
-
-    if (Date.now() - first.mtimeMs <= this.staleLockMs) return false;
-
-    // A lock creator can be between open('wx') and writing its token. Rechecking
-    // catches an mtime change and avoids deleting a lock that only looked stale.
-    await sleep(1);
-    let second;
-    try {
-      second = await stat(this.lockPath);
-    } catch (error) {
-      if (isNodeError(error, 'ENOENT')) return true;
-      throw error;
-    }
-
-    const sameFile = first.mtimeMs === second.mtimeMs
-      && first.size === second.size
-      && (first.ino === 0 || second.ino === 0 || first.ino === second.ino);
-    if (!sameFile || Date.now() - second.mtimeMs <= this.staleLockMs) return false;
-
-    try {
-      await unlink(this.lockPath);
-      return true;
-    } catch (error) {
-      if (isNodeError(error, 'ENOENT')) return true;
-      throw error;
-    }
-  }
-
-  private async releaseLock(ownership: LockOwnership): Promise<void> {
-    let token: string;
-    try {
-      token = await readFile(this.lockPath, 'utf8');
-    } catch (error) {
-      if (isNodeError(error, 'ENOENT')) return;
-      throw error;
-    }
-
-    if (token !== ownership.token) return;
-    try {
-      await unlink(this.lockPath);
-    } catch (error) {
-      if (!isNodeError(error, 'ENOENT')) throw error;
-    }
-  }
-
-  private async writeManifest(manifest: SharedSettingsManifest): Promise<void> {
+  private async writeManifest(
+    manifest: SharedSettingsManifest,
+    assertLockActive: () => void,
+  ): Promise<void> {
     const stagingPath = path.join(
       this.directory,
       `.${SHARED_SETTINGS_MANIFEST_FILE_NAME}.${process.pid}.${randomUUID()}.tmp`,
     );
+    let operationFailed = false;
 
     try {
       const handle = await open(stagingPath, 'wx', 0o600);
+      let writeFailed = false;
       try {
         await handle.writeFile(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
         await handle.sync();
+      } catch (error) {
+        writeFailed = true;
+        throw error;
       } finally {
-        await handle.close();
+        try {
+          await handle.close();
+        } catch (error) {
+          if (!writeFailed) throw error;
+        }
       }
 
+      await this.beforePublishStagedFile();
+      assertLockActive();
       await this.publishStagedFile(stagingPath, this.manifestPath);
+    } catch (error) {
+      operationFailed = true;
+      throw error;
     } finally {
       try {
         await unlink(stagingPath);
       } catch (error) {
-        if (!isNodeError(error, 'ENOENT')) throw error;
+        if (!isNodeError(error, 'ENOENT') && !operationFailed) throw error;
       }
     }
   }
