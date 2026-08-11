@@ -1,24 +1,20 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes as cryptoRandomBytes } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import {
+  link,
   mkdir,
   open,
   readFile,
+  readdir,
   rename,
-  rmdir,
-  stat,
   unlink,
-  utimes,
-  type FileHandle,
 } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
   InvalidSharedSettingsError,
   MalformedSharedSettingsError,
-  SharedSettingsAlreadyInitializedError,
-  SharedSettingsCommittedWithLockReleaseError,
-  SharedSettingsLockCompromisedError,
-  SharedSettingsLockTimeoutError,
+  SharedSettingsInitializationConflictError,
   SharedSettingsNotInitializedError,
   UnsupportedSharedSettingsVersionError,
 } from './shared-settings-errors';
@@ -30,22 +26,21 @@ import {
   type VirtualLinkColorMode,
 } from './shared-settings-types';
 
-export const SHARED_SETTINGS_MANIFEST_FILE_NAME = 'shared-settings-v1.json';
-export const SHARED_SETTINGS_LOCK_FILE_NAME = `${SHARED_SETTINGS_MANIFEST_FILE_NAME}.lock`;
+export const SHARED_SETTINGS_DIRECTORY_NAME = 'shared-settings-v1';
+export const SHARED_SETTINGS_SEED_FILE_NAME = 'seed.json';
+export const SHARED_SETTINGS_PATCH_DIRECTORY_NAME = 'patches';
 
-const DEFAULT_LOCK_TIMEOUT_MS = 2_000;
-const DEFAULT_STALE_LOCK_MS = 30_000;
-const DEFAULT_RETRY_MIN_MS = 10;
-const DEFAULT_RETRY_MAX_MS = 50;
-const DEFAULT_LOCK_UPDATE_MS = 5_000;
-const WINDOWS_RENAME_RETRY_MS = 2_000;
 const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
+const PATCH_ID_PATTERN = /^\d{16}-[0-9a-f]{16}-[0-9a-f]{12}-[0-9a-f]{32}$/;
+const MAX_ERROR_FILE_NAME_LENGTH = 160;
 const VALID_COLOR_MODES: readonly VirtualLinkColorMode[] = [
   'off',
   'muted-text',
   'colored-underline',
   'soft-pill',
 ];
+
+let processPatchSequence = 0n;
 
 export type SharedSettingsPatch =
   | { kind: 'set-enabled'; enabled: boolean }
@@ -62,33 +57,18 @@ export type SharedSettingsPatch =
   | { kind: 'set-virtual-link-targets'; sourceVaultId: string; targetVaultIds: string[] }
   | { kind: 'set-virtual-link-style'; mode: VirtualLinkColorMode; intensity: number };
 
-type ReleaseLock = () => Promise<void>;
+export interface SharedSettingsPatchEnvelope {
+  schemaVersion: 1;
+  id: string;
+  writerInstanceId: string;
+  createdAt: string;
+  patch: SharedSettingsPatch;
+}
 
 export interface SharedSettingsStoreOptions {
-  lockTimeoutMs?: number;
-  staleLockMs?: number;
-  lockUpdateMs?: number;
-  retryMinMs?: number;
-  retryMaxMs?: number;
   now?: () => Date;
-  lockNow?: () => number;
-  sleep?: (milliseconds: number) => Promise<void>;
-  random?: () => number;
-  publishStagedFile?: (stagingPath: string, manifestPath: string) => Promise<void>;
-  beforePublishStagedFile?: () => Promise<void>;
-  releaseLock?: (release: ReleaseLock) => Promise<void>;
-  onLockCompromised?: (error: Error) => void;
-}
-
-interface LockLease {
-  release: ReleaseLock;
-  guardOwnership: () => Promise<void>;
-  getCompromiseError: () => Error | undefined;
-}
-
-interface FileIdentity {
-  dev: bigint;
-  ino: bigint;
+  randomBytes?: (size: number) => Buffer;
+  beforePublishPatch?: (pendingPath: string, finalPath: string) => Promise<void>;
 }
 
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
@@ -98,92 +78,118 @@ function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoExcepti
     && (error as NodeJS.ErrnoException).code === code;
 }
 
-function fileIdentity(stats: { dev: bigint; ino: bigint }): FileIdentity {
-  return { dev: stats.dev, ino: stats.ino };
-}
-
-function sameFileIdentity(left: FileIdentity, right: FileIdentity): boolean {
-  return left.dev === right.dev && left.ino === right.ino;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function invalid(message: string): never {
+function invalidManifest(message: string): never {
   throw new InvalidSharedSettingsError(`Invalid shared settings manifest: ${message}`);
 }
 
-function requireRecord(value: unknown, field: string): Record<string, unknown> {
+function invalidPatch(message: string): never {
+  throw new InvalidSharedSettingsError(`Invalid shared settings patch: ${message}`);
+}
+
+function requireRecord(
+  value: unknown,
+  field: string,
+  invalid: (message: string) => never = invalidManifest,
+): Record<string, unknown> {
   if (!isRecord(value)) invalid(`${field} must be an object.`);
   return value;
 }
 
-function requireBoolean(value: unknown, field: string): asserts value is boolean {
+function requireOnlyFields(
+  value: Record<string, unknown>,
+  fields: readonly string[],
+  subject: string,
+  invalid: (message: string) => never,
+): void {
+  const allowed = new Set(fields);
+  const unexpected = Object.keys(value).find((field) => !allowed.has(field));
+  if (unexpected !== undefined) invalid(`${subject} contains unexpected field ${JSON.stringify(unexpected)}.`);
+}
+
+function requireBoolean(
+  value: unknown,
+  field: string,
+  invalid: (message: string) => never = invalidManifest,
+): asserts value is boolean {
   if (typeof value !== 'boolean') invalid(`${field} must be a boolean.`);
 }
 
-function requireNonEmptyString(value: unknown, field: string): asserts value is string {
+function requireNonEmptyString(
+  value: unknown,
+  field: string,
+  invalid: (message: string) => never = invalidManifest,
+): asserts value is string {
   if (typeof value !== 'string' || value.trim().length === 0) {
     invalid(`${field} must be a non-empty string.`);
   }
 }
 
-function requireStringArray(value: unknown, field: string): asserts value is string[] {
+function requireStringArray(
+  value: unknown,
+  field: string,
+  invalid: (message: string) => never = invalidManifest,
+): asserts value is string[] {
   if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
     invalid(`${field} must be an array of strings.`);
   }
-
-  if (new Set(value).size !== value.length) {
-    invalid(`${field} must not contain duplicates.`);
-  }
+  if (new Set(value).size !== value.length) invalid(`${field} must not contain duplicates.`);
 }
 
-function validateVault(vaultValue: unknown, index: number): asserts vaultValue is SharedVaultRecord {
-  const field = `vaults[${index}]`;
-  const vault = requireRecord(vaultValue, field);
-  requireNonEmptyString(vault.id, `${field}.id`);
-  requireNonEmptyString(vault.pathKey, `${field}.pathKey`);
-  requireNonEmptyString(vault.path, `${field}.path`);
-  requireNonEmptyString(vault.name, `${field}.name`);
-  requireBoolean(vault.enabled, `${field}.enabled`);
+function validateVault(
+  vaultValue: unknown,
+  field: string,
+  invalid: (message: string) => never = invalidManifest,
+): asserts vaultValue is SharedVaultRecord {
+  const vault = requireRecord(vaultValue, field, invalid);
+  requireNonEmptyString(vault.id, `${field}.id`, invalid);
+  requireNonEmptyString(vault.pathKey, `${field}.pathKey`, invalid);
+  requireNonEmptyString(vault.path, `${field}.path`, invalid);
+  requireNonEmptyString(vault.name, `${field}.name`, invalid);
+  requireBoolean(vault.enabled, `${field}.enabled`, invalid);
 
   if (vault.pathKey.includes('\\')) invalid(`${field}.pathKey must use forward slashes.`);
   if (vault.color !== undefined && (typeof vault.color !== 'string' || !HEX_COLOR_PATTERN.test(vault.color))) {
     invalid(`${field}.color must be a six-digit hexadecimal color.`);
   }
   if (vault.icon !== undefined && typeof vault.icon !== 'string') invalid(`${field}.icon must be a string.`);
-  if (vault.includePatterns !== undefined) requireStringArray(vault.includePatterns, `${field}.includePatterns`);
-  if (vault.excludePatterns !== undefined) requireStringArray(vault.excludePatterns, `${field}.excludePatterns`);
+  if (vault.includePatterns !== undefined) requireStringArray(vault.includePatterns, `${field}.includePatterns`, invalid);
+  if (vault.excludePatterns !== undefined) requireStringArray(vault.excludePatterns, `${field}.excludePatterns`, invalid);
 }
 
-function validateManifest(value: unknown): asserts value is SharedSettingsManifest {
+function validateManifest(value: unknown, expectedRevision?: number): asserts value is SharedSettingsManifest {
   const manifest = requireRecord(value, 'manifest');
 
   if (typeof manifest.schemaVersion === 'number' && manifest.schemaVersion > SHARED_SETTINGS_SCHEMA_VERSION) {
     throw new UnsupportedSharedSettingsVersionError(manifest.schemaVersion);
   }
   if (manifest.schemaVersion !== SHARED_SETTINGS_SCHEMA_VERSION) {
-    invalid(`schemaVersion must be ${SHARED_SETTINGS_SCHEMA_VERSION}.`);
+    invalidManifest(`schemaVersion must be ${SHARED_SETTINGS_SCHEMA_VERSION}.`);
   }
-  if (!Number.isSafeInteger(manifest.revision) || (manifest.revision as number) < 1) {
-    invalid('revision must be a positive safe integer.');
+  if (!Number.isSafeInteger(manifest.revision) || (manifest.revision as number) < 0) {
+    invalidManifest('revision must be a non-negative safe integer.');
+  }
+  if (expectedRevision !== undefined && manifest.revision !== expectedRevision) {
+    invalidManifest(`revision must be ${expectedRevision}.`);
   }
   requireNonEmptyString(manifest.updatedAt, 'updatedAt');
-  if (Number.isNaN(Date.parse(manifest.updatedAt))) invalid('updatedAt must be a valid timestamp.');
+  if (Number.isNaN(Date.parse(manifest.updatedAt))) invalidManifest('updatedAt must be a valid timestamp.');
   requireNonEmptyString(manifest.writerInstanceId, 'writerInstanceId');
   requireBoolean(manifest.enabled, 'enabled');
   requireStringArray(manifest.excludedVaultIds, 'excludedVaultIds');
 
-  if (!Array.isArray(manifest.vaults)) invalid('vaults must be an array.');
-  manifest.vaults.forEach((vault, index) => validateVault(vault, index));
+  if (!Array.isArray(manifest.vaults)) invalidManifest('vaults must be an array.');
+  manifest.vaults.forEach((vault, index) => validateVault(vault, `vaults[${index}]`));
   const vaultIds = manifest.vaults.map((vault) => vault.id);
   const pathKeys = manifest.vaults.map((vault) => vault.pathKey);
-  if (new Set(vaultIds).size !== vaultIds.length) invalid('vault IDs must be unique.');
-  if (new Set(pathKeys).size !== pathKeys.length) invalid('vault path keys must be unique.');
+  if (new Set(vaultIds).size !== vaultIds.length) invalidManifest('vault IDs must be unique.');
+  if (new Set(pathKeys).size !== pathKeys.length) invalidManifest('vault path keys must be unique.');
   const knownVaultIds = new Set(vaultIds);
   if (manifest.excludedVaultIds.some((id) => !knownVaultIds.has(id))) {
-    invalid('excludedVaultIds must reference known vaults.');
+    invalidManifest('excludedVaultIds must reference known vaults.');
   }
 
   const crossVaultLinks = requireRecord(manifest.crossVaultLinks, 'crossVaultLinks');
@@ -194,31 +200,144 @@ function validateManifest(value: unknown): asserts value is SharedSettingsManife
   requireBoolean(virtualLinks.enabled, 'virtualLinks.enabled');
   requireStringArray(virtualLinks.excludedSourceVaultIds, 'virtualLinks.excludedSourceVaultIds');
   if ((virtualLinks.excludedSourceVaultIds as string[]).some((id) => !knownVaultIds.has(id))) {
-    invalid('virtualLinks.excludedSourceVaultIds must reference known vaults.');
+    invalidManifest('virtualLinks.excludedSourceVaultIds must reference known vaults.');
   }
 
   const targets = requireRecord(virtualLinks.targetVaultIdsBySource, 'virtualLinks.targetVaultIdsBySource');
   for (const [sourceId, targetIds] of Object.entries(targets)) {
-    if (!knownVaultIds.has(sourceId)) invalid('virtual link sources must reference known vaults.');
+    if (!knownVaultIds.has(sourceId)) invalidManifest('virtual link sources must reference known vaults.');
     requireStringArray(targetIds, `virtualLinks.targetVaultIdsBySource.${sourceId}`);
     if (targetIds.some((targetId) => !knownVaultIds.has(targetId))) {
-      invalid('virtual link targets must reference known vaults.');
+      invalidManifest('virtual link targets must reference known vaults.');
     }
   }
 
   if (typeof virtualLinks.colorMode !== 'string'
     || !VALID_COLOR_MODES.includes(virtualLinks.colorMode as VirtualLinkColorMode)) {
-    invalid('virtualLinks.colorMode is unsupported.');
+    invalidManifest('virtualLinks.colorMode is unsupported.');
   }
   if (!Number.isInteger(virtualLinks.colorIntensity)
     || (virtualLinks.colorIntensity as number) < 10
     || (virtualLinks.colorIntensity as number) > 90) {
-    invalid('virtualLinks.colorIntensity must be an integer from 10 through 90.');
+    invalidManifest('virtualLinks.colorIntensity must be an integer from 10 through 90.');
   }
 
   if (manifest.extensions !== undefined && !isRecord(manifest.extensions)) {
-    invalid('extensions must be an object.');
+    invalidManifest('extensions must be an object.');
   }
+}
+
+function validatePatch(value: unknown): asserts value is SharedSettingsPatch {
+  const patch = requireRecord(value, 'patch', invalidPatch);
+  requireNonEmptyString(patch.kind, 'patch.kind', invalidPatch);
+
+  switch (patch.kind) {
+    case 'set-enabled':
+      requireOnlyFields(patch, ['kind', 'enabled'], 'set-enabled patch', invalidPatch);
+      requireBoolean(patch.enabled, 'patch.enabled', invalidPatch);
+      return;
+    case 'set-vault-excluded':
+      requireOnlyFields(patch, ['kind', 'vaultId', 'excluded'], 'set-vault-excluded patch', invalidPatch);
+      requireNonEmptyString(patch.vaultId, 'patch.vaultId', invalidPatch);
+      requireBoolean(patch.excluded, 'patch.excluded', invalidPatch);
+      return;
+    case 'upsert-vault':
+      requireOnlyFields(patch, ['kind', 'vault'], 'upsert-vault patch', invalidPatch);
+      validateVault(patch.vault, 'patch.vault', invalidPatch);
+      return;
+    case 'remove-vault':
+      requireOnlyFields(patch, ['kind', 'vaultId'], 'remove-vault patch', invalidPatch);
+      requireNonEmptyString(patch.vaultId, 'patch.vaultId', invalidPatch);
+      return;
+    case 'set-vault-color':
+      requireOnlyFields(patch, ['kind', 'vaultId', 'color'], 'set-vault-color patch', invalidPatch);
+      requireNonEmptyString(patch.vaultId, 'patch.vaultId', invalidPatch);
+      if (patch.color !== undefined && (typeof patch.color !== 'string' || !HEX_COLOR_PATTERN.test(patch.color))) {
+        invalidPatch('patch.color must be a six-digit hexadecimal color.');
+      }
+      return;
+    case 'set-vault-icon':
+      requireOnlyFields(patch, ['kind', 'vaultId', 'icon'], 'set-vault-icon patch', invalidPatch);
+      requireNonEmptyString(patch.vaultId, 'patch.vaultId', invalidPatch);
+      if (patch.icon !== undefined && typeof patch.icon !== 'string') invalidPatch('patch.icon must be a string.');
+      return;
+    case 'set-vault-enabled':
+      requireOnlyFields(patch, ['kind', 'vaultId', 'enabled'], 'set-vault-enabled patch', invalidPatch);
+      requireNonEmptyString(patch.vaultId, 'patch.vaultId', invalidPatch);
+      requireBoolean(patch.enabled, 'patch.enabled', invalidPatch);
+      return;
+    case 'set-vault-patterns':
+      requireOnlyFields(patch, ['kind', 'vaultId', 'include', 'exclude'], 'set-vault-patterns patch', invalidPatch);
+      requireNonEmptyString(patch.vaultId, 'patch.vaultId', invalidPatch);
+      requireStringArray(patch.include, 'patch.include', invalidPatch);
+      requireStringArray(patch.exclude, 'patch.exclude', invalidPatch);
+      return;
+    case 'set-cross-vault-appearance':
+      requireOnlyFields(patch, ['kind', 'showBadge', 'useColor'], 'set-cross-vault-appearance patch', invalidPatch);
+      requireBoolean(patch.showBadge, 'patch.showBadge', invalidPatch);
+      requireBoolean(patch.useColor, 'patch.useColor', invalidPatch);
+      return;
+    case 'set-virtual-links-enabled':
+      requireOnlyFields(patch, ['kind', 'enabled'], 'set-virtual-links-enabled patch', invalidPatch);
+      requireBoolean(patch.enabled, 'patch.enabled', invalidPatch);
+      return;
+    case 'set-virtual-link-source-excluded':
+      requireOnlyFields(
+        patch,
+        ['kind', 'vaultId', 'excluded'],
+        'set-virtual-link-source-excluded patch',
+        invalidPatch,
+      );
+      requireNonEmptyString(patch.vaultId, 'patch.vaultId', invalidPatch);
+      requireBoolean(patch.excluded, 'patch.excluded', invalidPatch);
+      return;
+    case 'set-virtual-link-targets':
+      requireOnlyFields(
+        patch,
+        ['kind', 'sourceVaultId', 'targetVaultIds'],
+        'set-virtual-link-targets patch',
+        invalidPatch,
+      );
+      requireNonEmptyString(patch.sourceVaultId, 'patch.sourceVaultId', invalidPatch);
+      requireStringArray(patch.targetVaultIds, 'patch.targetVaultIds', invalidPatch);
+      return;
+    case 'set-virtual-link-style':
+      requireOnlyFields(patch, ['kind', 'mode', 'intensity'], 'set-virtual-link-style patch', invalidPatch);
+      if (typeof patch.mode !== 'string' || !VALID_COLOR_MODES.includes(patch.mode as VirtualLinkColorMode)) {
+        invalidPatch('patch.mode is unsupported.');
+      }
+      if (!Number.isInteger(patch.intensity)
+        || (patch.intensity as number) < 10
+        || (patch.intensity as number) > 90) {
+        invalidPatch('patch.intensity must be an integer from 10 through 90.');
+      }
+      return;
+    default:
+      invalidPatch(`unsupported kind ${JSON.stringify(patch.kind)}.`);
+  }
+}
+
+function validateEnvelope(value: unknown, expectedId: string): asserts value is SharedSettingsPatchEnvelope {
+  const envelope = requireRecord(value, 'patch envelope', invalidPatch);
+  requireOnlyFields(
+    envelope,
+    ['schemaVersion', 'id', 'writerInstanceId', 'createdAt', 'patch'],
+    'patch envelope',
+    invalidPatch,
+  );
+  if (typeof envelope.schemaVersion === 'number' && envelope.schemaVersion > SHARED_SETTINGS_SCHEMA_VERSION) {
+    throw new UnsupportedSharedSettingsVersionError(envelope.schemaVersion);
+  }
+  if (envelope.schemaVersion !== SHARED_SETTINGS_SCHEMA_VERSION) {
+    invalidPatch(`schemaVersion must be ${SHARED_SETTINGS_SCHEMA_VERSION}.`);
+  }
+  requireNonEmptyString(envelope.id, 'patch envelope.id', invalidPatch);
+  if (!PATCH_ID_PATTERN.test(envelope.id)) invalidPatch('patch envelope.id has an invalid format.');
+  if (envelope.id !== expectedId) invalidPatch('patch envelope.id must match its filename.');
+  requireNonEmptyString(envelope.writerInstanceId, 'patch envelope.writerInstanceId', invalidPatch);
+  requireNonEmptyString(envelope.createdAt, 'patch envelope.createdAt', invalidPatch);
+  if (Number.isNaN(Date.parse(envelope.createdAt))) invalidPatch('patch envelope.createdAt must be a valid timestamp.');
+  validatePatch(envelope.patch);
 }
 
 function cloneVault(vault: SharedVaultRecord): SharedVaultRecord {
@@ -245,7 +364,7 @@ function toggleId(ids: readonly string[], id: string, included: boolean): string
 
 function findVaultIndex(manifest: SharedSettingsManifest, vaultId: string): number {
   const index = manifest.vaults.findIndex((vault) => vault.id === vaultId);
-  if (index < 0) invalid(`patch references unknown vault ${JSON.stringify(vaultId)}.`);
+  if (index < 0) invalidPatch(`patch references unknown vault ${JSON.stringify(vaultId)}.`);
   return index;
 }
 
@@ -262,14 +381,9 @@ function applyPatch(manifest: SharedSettingsManifest, patch: SharedSettingsPatch
   switch (patch.kind) {
     case 'set-enabled':
       return { ...manifest, enabled: patch.enabled };
-
     case 'set-vault-excluded':
       findVaultIndex(manifest, patch.vaultId);
-      return {
-        ...manifest,
-        excludedVaultIds: toggleId(manifest.excludedVaultIds, patch.vaultId, patch.excluded),
-      };
-
+      return { ...manifest, excludedVaultIds: toggleId(manifest.excludedVaultIds, patch.vaultId, patch.excluded) };
     case 'upsert-vault': {
       const existingIndex = manifest.vaults.findIndex((vault) => vault.id === patch.vault.id);
       const vaults = existingIndex < 0
@@ -279,15 +393,12 @@ function applyPatch(manifest: SharedSettingsManifest, patch: SharedSettingsPatch
         ));
       return { ...manifest, vaults };
     }
-
     case 'remove-vault': {
+      findVaultIndex(manifest, patch.vaultId);
       const targetVaultIdsBySource = Object.fromEntries(
         Object.entries(manifest.virtualLinks.targetVaultIdsBySource)
           .filter(([sourceId]) => sourceId !== patch.vaultId)
-          .map(([sourceId, targetIds]) => [
-            sourceId,
-            targetIds.filter((targetId) => targetId !== patch.vaultId),
-          ]),
+          .map(([sourceId, targetIds]) => [sourceId, targetIds.filter((targetId) => targetId !== patch.vaultId)]),
       );
       return {
         ...manifest,
@@ -295,14 +406,11 @@ function applyPatch(manifest: SharedSettingsManifest, patch: SharedSettingsPatch
         excludedVaultIds: manifest.excludedVaultIds.filter((id) => id !== patch.vaultId),
         virtualLinks: {
           ...manifest.virtualLinks,
-          excludedSourceVaultIds: manifest.virtualLinks.excludedSourceVaultIds.filter(
-            (id) => id !== patch.vaultId,
-          ),
+          excludedSourceVaultIds: manifest.virtualLinks.excludedSourceVaultIds.filter((id) => id !== patch.vaultId),
           targetVaultIdsBySource,
         },
       };
     }
-
     case 'set-vault-color':
       return {
         ...manifest,
@@ -312,7 +420,6 @@ function applyPatch(manifest: SharedSettingsManifest, patch: SharedSettingsPatch
           return updated;
         }),
       };
-
     case 'set-vault-icon':
       return {
         ...manifest,
@@ -322,13 +429,11 @@ function applyPatch(manifest: SharedSettingsManifest, patch: SharedSettingsPatch
           return updated;
         }),
       };
-
     case 'set-vault-enabled':
       return {
         ...manifest,
         vaults: replaceVault(manifest, patch.vaultId, (vault) => ({ ...vault, enabled: patch.enabled })),
       };
-
     case 'set-vault-patterns':
       return {
         ...manifest,
@@ -338,7 +443,6 @@ function applyPatch(manifest: SharedSettingsManifest, patch: SharedSettingsPatch
           excludePatterns: [...patch.exclude],
         })),
       };
-
     case 'set-cross-vault-appearance':
       return {
         ...manifest,
@@ -348,13 +452,8 @@ function applyPatch(manifest: SharedSettingsManifest, patch: SharedSettingsPatch
           useVaultColorForLinks: patch.useColor,
         },
       };
-
     case 'set-virtual-links-enabled':
-      return {
-        ...manifest,
-        virtualLinks: { ...manifest.virtualLinks, enabled: patch.enabled },
-      };
-
+      return { ...manifest, virtualLinks: { ...manifest.virtualLinks, enabled: patch.enabled } };
     case 'set-virtual-link-source-excluded':
       findVaultIndex(manifest, patch.vaultId);
       return {
@@ -368,9 +467,9 @@ function applyPatch(manifest: SharedSettingsManifest, patch: SharedSettingsPatch
           ),
         },
       };
-
     case 'set-virtual-link-targets':
       findVaultIndex(manifest, patch.sourceVaultId);
+      for (const targetVaultId of patch.targetVaultIds) findVaultIndex(manifest, targetVaultId);
       return {
         ...manifest,
         virtualLinks: {
@@ -381,7 +480,6 @@ function applyPatch(manifest: SharedSettingsManifest, patch: SharedSettingsPatch
           },
         },
       };
-
     case 'set-virtual-link-style':
       return {
         ...manifest,
@@ -391,168 +489,223 @@ function applyPatch(manifest: SharedSettingsManifest, patch: SharedSettingsPatch
           colorIntensity: patch.intensity,
         },
       };
-
-    default:
-      throw new InvalidSharedSettingsError(
-        `Invalid shared settings patch: unsupported kind ${JSON.stringify((patch as { kind?: unknown }).kind)}.`,
-      );
   }
 }
 
-function defaultSleep(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+function seedComparable(manifest: SharedSettingsManifest): Record<string, unknown> {
+  const {
+    schemaVersion: _schemaVersion,
+    revision: _revision,
+    updatedAt: _updatedAt,
+    writerInstanceId: _writerInstanceId,
+    ...projection
+  } = manifest;
+  return projection;
 }
 
-async function defaultPublishStagedFile(
-  stagingPath: string,
-  manifestPath: string,
-  beforeRename: () => Promise<void>,
-): Promise<void> {
-  if (process.platform !== 'win32') {
-    await beforeRename();
-    await rename(stagingPath, manifestPath);
-    return;
+function boundedFileName(fileName: string): string {
+  return fileName.length <= MAX_ERROR_FILE_NAME_LENGTH
+    ? fileName
+    : `${fileName.slice(0, MAX_ERROR_FILE_NAME_LENGTH - 3)}...`;
+}
+
+async function parseJsonFile(filePath: string, description: string): Promise<unknown> {
+  let content: string;
+  try {
+    content = await readFile(filePath, 'utf8');
+  } catch (error) {
+    throw error;
   }
 
-  const deadline = Date.now() + WINDOWS_RENAME_RETRY_MS;
-  while (true) {
-    await beforeRename();
+  try {
+    return JSON.parse(content) as unknown;
+  } catch (error) {
+    throw new MalformedSharedSettingsError(`${description} contains malformed JSON.`, { cause: error });
+  }
+}
+
+async function writeSyncedFile(filePath: string, value: unknown): Promise<void> {
+  const handle = await open(filePath, 'wx', 0o600);
+  let failed = false;
+  try {
+    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    await handle.sync();
+  } catch (error) {
+    failed = true;
+    throw error;
+  } finally {
     try {
-      // Node's Windows rename uses replacement semantics. Never unlink the destination first:
-      // readers must always observe either the old complete file or the new complete file.
-      await rename(stagingPath, manifestPath);
-      return;
+      await handle.close();
     } catch (error) {
-      const retryable = isNodeError(error, 'EACCES')
-        || isNodeError(error, 'EPERM')
-        || isNodeError(error, 'EBUSY');
-      if (!retryable || Date.now() >= deadline) throw error;
-      await defaultSleep(Math.min(20, Math.max(1, deadline - Date.now())));
+      if (!failed) throw error;
     }
+  }
+}
+
+async function cleanupPending(filePath: string): Promise<void> {
+  try {
+    await unlink(filePath);
+  } catch {
+    // Pending files are never read and cleanup is best-effort.
   }
 }
 
 export class SharedSettingsStore {
+  readonly applicationDataRoot: string;
   readonly directory: string;
-  readonly manifestPath: string;
-  readonly lockPath: string;
+  readonly seedPath: string;
+  readonly patchesDirectory: string;
 
-  private readonly lockTimeoutMs: number;
-  private readonly staleLockMs: number;
-  private readonly lockUpdateMs: number;
-  private readonly retryMinMs: number;
-  private readonly retryMaxMs: number;
   private readonly now: () => Date;
-  private readonly lockNow: () => number;
-  private readonly sleep: (milliseconds: number) => Promise<void>;
-  private readonly random: () => number;
-  private readonly publishStagedFile: (
-    stagingPath: string,
-    manifestPath: string,
-    beforeRename: () => Promise<void>,
-  ) => Promise<void>;
-  private readonly beforePublishStagedFile: () => Promise<void>;
-  private readonly releaseLock: (release: ReleaseLock) => Promise<void>;
-  private readonly onLockCompromised?: (error: Error) => void;
+  private readonly randomBytes: (size: number) => Buffer;
+  private readonly beforePublishPatch: (pendingPath: string, finalPath: string) => Promise<void>;
   private writeQueue: Promise<void> = Promise.resolve();
 
-  constructor(directory: string, options: SharedSettingsStoreOptions = {}) {
-    this.directory = path.resolve(directory);
-    this.manifestPath = path.join(this.directory, SHARED_SETTINGS_MANIFEST_FILE_NAME);
-    this.lockPath = path.join(this.directory, SHARED_SETTINGS_LOCK_FILE_NAME);
-    this.lockTimeoutMs = Math.max(0, Math.min(DEFAULT_LOCK_TIMEOUT_MS, options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS));
-    this.staleLockMs = Math.max(2_000, options.staleLockMs ?? DEFAULT_STALE_LOCK_MS);
-    this.lockUpdateMs = Math.max(
-      1_000,
-      Math.min(this.staleLockMs / 2, options.lockUpdateMs ?? DEFAULT_LOCK_UPDATE_MS),
-    );
-    this.retryMinMs = Math.max(1, options.retryMinMs ?? DEFAULT_RETRY_MIN_MS);
-    this.retryMaxMs = Math.max(this.retryMinMs, options.retryMaxMs ?? DEFAULT_RETRY_MAX_MS);
+  constructor(applicationDataRoot: string, options: SharedSettingsStoreOptions = {}) {
+    this.applicationDataRoot = path.resolve(applicationDataRoot);
+    this.directory = path.join(this.applicationDataRoot, SHARED_SETTINGS_DIRECTORY_NAME);
+    this.seedPath = path.join(this.directory, SHARED_SETTINGS_SEED_FILE_NAME);
+    this.patchesDirectory = path.join(this.directory, SHARED_SETTINGS_PATCH_DIRECTORY_NAME);
     this.now = options.now ?? (() => new Date());
-    this.lockNow = options.lockNow ?? Date.now;
-    this.sleep = options.sleep ?? defaultSleep;
-    this.random = options.random ?? Math.random;
-    this.publishStagedFile = options.publishStagedFile
-      ? async (stagingPath, manifestPath, beforeRename) => {
-        await beforeRename();
-        await options.publishStagedFile!(stagingPath, manifestPath);
-      }
-      : defaultPublishStagedFile;
-    this.beforePublishStagedFile = options.beforePublishStagedFile ?? (async () => undefined);
-    this.releaseLock = options.releaseLock ?? (async (release) => release());
-    this.onLockCompromised = options.onLockCompromised;
+    this.randomBytes = options.randomBytes ?? cryptoRandomBytes;
+    this.beforePublishPatch = options.beforePublishPatch ?? (async () => undefined);
   }
 
   async read(): Promise<SharedSettingsManifest | null> {
-    let content: string;
+    const seed = await this.readSeed();
+    if (!seed) return null;
+
+    let entries;
     try {
-      content = await readFile(this.manifestPath, 'utf8');
+      entries = await readdir(this.patchesDirectory, { withFileTypes: true });
     } catch (error) {
-      if (isNodeError(error, 'ENOENT')) return null;
+      if (isNodeError(error, 'ENOENT')) return seed;
       throw error;
     }
 
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(content);
-    } catch (error) {
-      throw new MalformedSharedSettingsError(
-        `Shared settings manifest at ${this.manifestPath} contains malformed JSON.`,
-        { cause: error },
+    const patchFileNames = entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json') && !entry.name.startsWith('.pending-'))
+      .map((entry) => entry.name)
+      .sort();
+
+    let result = seed;
+    let revision = 0;
+    for (const fileName of patchFileNames) {
+      const id = fileName.slice(0, -'.json'.length);
+      const parsed = await parseJsonFile(
+        path.join(this.patchesDirectory, fileName),
+        `Shared settings patch ${JSON.stringify(boundedFileName(fileName))}`,
       );
+      validateEnvelope(parsed, id);
+      result = {
+        ...applyPatch(result, parsed.patch),
+        revision: revision + 1,
+        updatedAt: parsed.createdAt,
+        writerInstanceId: parsed.writerInstanceId,
+      };
+      revision += 1;
+      validateManifest(result, revision);
     }
 
-    validateManifest(parsed);
-    return parsed;
+    return result;
   }
 
   async initialize(seed: SharedSettingsProjection, writerInstanceId: string): Promise<SharedSettingsManifest> {
-    return this.serializeWrite(async () => {
-      await mkdir(this.directory, { recursive: true });
-      return this.withLock(async (guardOwnership) => {
-        const existing = await this.read();
-        if (existing) {
-          throw new SharedSettingsAlreadyInitializedError(
-            `Shared settings manifest already exists at ${this.manifestPath}.`,
-          );
-        }
-
-        const manifest = {
-          ...seed,
-          schemaVersion: SHARED_SETTINGS_SCHEMA_VERSION,
-          revision: 1,
-          updatedAt: this.now().toISOString(),
-          writerInstanceId,
-        } as SharedSettingsManifest;
-        validateManifest(manifest);
-        await this.writeManifest(manifest, guardOwnership);
-        return manifest;
-      });
-    });
+    return this.serializeWrite(() => this.initializeNow(seed, writerInstanceId));
   }
 
   async patch(patch: SharedSettingsPatch, writerInstanceId: string): Promise<SharedSettingsManifest> {
-    return this.serializeWrite(async () => {
-      await mkdir(this.directory, { recursive: true });
-      return this.withLock(async (guardOwnership) => {
-        const latest = await this.read();
-        if (!latest) {
-          throw new SharedSettingsNotInitializedError(
-            `Shared settings manifest does not exist at ${this.manifestPath}.`,
-          );
-        }
+    return this.serializeWrite(() => this.patchNow(patch, writerInstanceId));
+  }
 
-        const next = {
-          ...applyPatch(latest, patch),
-          revision: latest.revision + 1,
-          updatedAt: this.now().toISOString(),
-          writerInstanceId,
-        };
-        validateManifest(next);
-        await this.writeManifest(next, guardOwnership);
-        return next;
-      });
-    });
+  private async initializeNow(
+    seed: SharedSettingsProjection,
+    writerInstanceId: string,
+  ): Promise<SharedSettingsManifest> {
+    requireNonEmptyString(writerInstanceId, 'writerInstanceId');
+    const createdAt = this.now();
+    if (Number.isNaN(createdAt.getTime())) invalidManifest('updatedAt must be a valid timestamp.');
+    const candidate = {
+      ...seed,
+      schemaVersion: SHARED_SETTINGS_SCHEMA_VERSION,
+      revision: 0,
+      updatedAt: createdAt.toISOString(),
+      writerInstanceId,
+    } as SharedSettingsManifest;
+    validateManifest(candidate, 0);
+
+    const existing = await this.readSeed();
+    if (existing) return this.resolveExistingSeed(existing, candidate);
+
+    await mkdir(this.patchesDirectory, { recursive: true });
+    const pendingPath = path.join(
+      this.directory,
+      `.pending-seed-${process.pid}-${this.randomBytes(16).toString('hex')}`,
+    );
+
+    try {
+      await writeSyncedFile(pendingPath, candidate);
+      try {
+        await link(pendingPath, this.seedPath);
+        return candidate;
+      } catch (error) {
+        if (!isNodeError(error, 'EEXIST')) throw error;
+        const published = await this.readSeed();
+        if (!published) throw error;
+        return this.resolveExistingSeed(published, candidate);
+      }
+    } finally {
+      await cleanupPending(pendingPath);
+    }
+  }
+
+  private async patchNow(
+    patch: SharedSettingsPatch,
+    writerInstanceId: string,
+  ): Promise<SharedSettingsManifest> {
+    requireNonEmptyString(writerInstanceId, 'writerInstanceId', invalidPatch);
+    validatePatch(patch);
+    const current = await this.read();
+    if (!current) {
+      throw new SharedSettingsNotInitializedError(
+        `Shared settings seed does not exist at ${this.seedPath}.`,
+      );
+    }
+
+    const preview = applyPatch(current, patch);
+    validateManifest(preview, current.revision);
+
+    await mkdir(this.patchesDirectory, { recursive: true });
+    const createdAt = this.now();
+    if (Number.isNaN(createdAt.getTime())) invalidPatch('patch createdAt must be a valid timestamp.');
+    const id = this.createPatchId(createdAt, writerInstanceId);
+    const envelope: SharedSettingsPatchEnvelope = {
+      schemaVersion: SHARED_SETTINGS_SCHEMA_VERSION,
+      id,
+      writerInstanceId,
+      createdAt: createdAt.toISOString(),
+      patch,
+    };
+    validateEnvelope(envelope, id);
+
+    const pendingPath = path.join(
+      this.patchesDirectory,
+      `.pending-${id}-${this.randomBytes(16).toString('hex')}`,
+    );
+    const finalPath = path.join(this.patchesDirectory, `${id}.json`);
+    try {
+      await writeSyncedFile(pendingPath, envelope);
+      await this.beforePublishPatch(pendingPath, finalPath);
+      await rename(pendingPath, finalPath);
+    } finally {
+      await cleanupPending(pendingPath);
+    }
+
+    const result = await this.read();
+    if (!result) {
+      throw new SharedSettingsNotInitializedError('Shared settings seed disappeared after patch publication.');
+    }
+    return result;
   }
 
   private serializeWrite<T>(operation: () => Promise<T>): Promise<T> {
@@ -561,295 +714,34 @@ export class SharedSettingsStore {
     return result;
   }
 
-  private async withLock(
-    operation: (guardOwnership: () => Promise<void>) => Promise<SharedSettingsManifest>,
-  ): Promise<SharedSettingsManifest> {
-    const lease = await this.acquireLock();
-    let operationFailed = false;
-    let operationError: unknown;
-    let result!: SharedSettingsManifest;
-
+  private async readSeed(): Promise<SharedSettingsManifest | null> {
+    let parsed: unknown;
     try {
-      result = await operation(lease.guardOwnership);
+      parsed = await parseJsonFile(this.seedPath, `Shared settings seed at ${this.seedPath}`);
     } catch (error) {
-      operationFailed = true;
-      operationError = error;
+      if (isNodeError(error, 'ENOENT')) return null;
+      throw error;
     }
-
-    let releaseError: unknown;
-    try {
-      await lease.release();
-    } catch (error) {
-      releaseError = error;
-    }
-
-    if (operationFailed) throw operationError;
-
-    const compromiseError = lease.getCompromiseError();
-    if (releaseError !== undefined || compromiseError !== undefined) {
-      throw new SharedSettingsCommittedWithLockReleaseError(result, {
-        cause: compromiseError ?? releaseError,
-      });
-    }
-    return result;
+    validateManifest(parsed, 0);
+    return parsed;
   }
 
-  private async acquireLock(): Promise<LockLease> {
-    const startedAt = this.lockNow();
-    const deadline = startedAt + this.lockTimeoutMs;
-    let lastContentionError: unknown;
-    let attempted = false;
-    const timeout = (): SharedSettingsLockTimeoutError => new SharedSettingsLockTimeoutError(
-      `Timed out after ${Math.max(0, this.lockNow() - startedAt)}ms waiting for ${this.lockPath}.`,
-      { cause: lastContentionError },
+  private resolveExistingSeed(
+    existing: SharedSettingsManifest,
+    candidate: SharedSettingsManifest,
+  ): SharedSettingsManifest {
+    if (isDeepStrictEqual(seedComparable(existing), seedComparable(candidate))) return existing;
+    throw new SharedSettingsInitializationConflictError(
+      `Shared settings seed at ${this.seedPath} was initialized with conflicting settings.`,
     );
-
-    while (true) {
-      if (attempted && this.lockNow() >= deadline) throw timeout();
-      attempted = true;
-
-      try {
-        await mkdir(this.lockPath);
-        return await this.createLockLease();
-      } catch (error) {
-        if (!isNodeError(error, 'EEXIST')) throw error;
-        lastContentionError = error;
-        if (await this.expireStaleLock()) continue;
-      }
-
-      const remaining = deadline - this.lockNow();
-      if (remaining <= 0) throw timeout();
-
-      const randomFraction = Math.max(0, Math.min(1, this.random()));
-      const jitteredDelay = this.retryMinMs
-        + (this.retryMaxMs - this.retryMinMs) * randomFraction;
-      await this.sleep(Math.min(remaining, Math.max(1, jitteredDelay)));
-    }
   }
 
-  private async expireStaleLock(): Promise<boolean> {
-    let first;
-    try {
-      first = await stat(this.lockPath, { bigint: true });
-    } catch (error) {
-      if (isNodeError(error, 'ENOENT')) return true;
-      throw error;
-    }
-
-    if (Number(first.mtimeMs) >= this.lockNow() - this.staleLockMs) return false;
-
-    let second;
-    try {
-      second = await stat(this.lockPath, { bigint: true });
-    } catch (error) {
-      if (isNodeError(error, 'ENOENT')) return true;
-      throw error;
-    }
-
-    if (!sameFileIdentity(fileIdentity(first), fileIdentity(second))
-      || first.mtimeNs !== second.mtimeNs
-      || Number(second.mtimeMs) >= this.lockNow() - this.staleLockMs) {
-      return false;
-    }
-
-    try {
-      await rmdir(this.lockPath);
-      return true;
-    } catch (error) {
-      if (isNodeError(error, 'ENOENT')) return true;
-      if (isNodeError(error, 'ENOTEMPTY') || isNodeError(error, 'EEXIST')) return false;
-      throw error;
-    }
-  }
-
-  private async createLockLease(): Promise<LockLease> {
-    let handle: FileHandle | undefined;
-    let acquiredIdentity: FileIdentity | undefined;
-
-    try {
-      handle = await open(this.lockPath, 'r');
-      acquiredIdentity = fileIdentity(await handle.stat({ bigint: true }));
-      const pathnameIdentity = fileIdentity(await stat(this.lockPath, { bigint: true }));
-      if (!sameFileIdentity(acquiredIdentity, pathnameIdentity)) {
-        throw new Error('The lock directory changed while its ownership handle was being opened.');
-      }
-    } catch (error) {
-      try {
-        await handle?.close();
-      } catch {
-        // Preserve the acquisition error.
-      }
-      if (acquiredIdentity) {
-        try {
-          const pathnameIdentity = fileIdentity(await stat(this.lockPath, { bigint: true }));
-          if (sameFileIdentity(acquiredIdentity, pathnameIdentity)) await rmdir(this.lockPath);
-        } catch {
-          // Never blindly remove a pathname after acquisition identity was lost.
-        }
-      }
-      throw error;
-    }
-
-    const ownedHandle = handle;
-    const ownedIdentity = acquiredIdentity;
-    let compromiseError: SharedSettingsLockCompromisedError | undefined;
-    let stopped = false;
-    let closed = false;
-    let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
-    let guardTail: Promise<void> = Promise.resolve();
-
-    const markCompromised = (cause: unknown): SharedSettingsLockCompromisedError => {
-      if (!compromiseError) {
-        compromiseError = new SharedSettingsLockCompromisedError(
-          `The shared settings lock for ${this.manifestPath} was compromised before publication or release.`,
-          { cause },
-        );
-        try {
-          this.onLockCompromised?.(compromiseError);
-        } catch {
-          // A diagnostic callback must not replace the ownership error.
-        }
-      }
-      return compromiseError;
-    };
-
-    const performOwnershipGuard = async (): Promise<void> => {
-      if (compromiseError) throw compromiseError;
-
-      try {
-        const handleIdentity = fileIdentity(await ownedHandle.stat({ bigint: true }));
-        if (!sameFileIdentity(ownedIdentity, handleIdentity)) {
-          throw new Error('The acquired lock directory handle changed identity.');
-        }
-
-        const renewalTime = new Date(this.lockNow());
-        try {
-          await ownedHandle.utimes(renewalTime, renewalTime);
-        } catch (error) {
-          // Windows does not support futimes on directory handles. Verify the pathname
-          // immediately before the fallback update, then verify it again below.
-          if (!isNodeError(error, 'EPERM') && !isNodeError(error, 'EISDIR') && !isNodeError(error, 'ENOSYS')) {
-            throw error;
-          }
-          const beforeRenewal = fileIdentity(await stat(this.lockPath, { bigint: true }));
-          if (!sameFileIdentity(ownedIdentity, beforeRenewal)) {
-            throw new Error('The lock directory pathname no longer names the acquired inode.');
-          }
-          await utimes(this.lockPath, renewalTime, renewalTime);
-        }
-
-        const pathnameIdentity = fileIdentity(await stat(this.lockPath, { bigint: true }));
-        if (!sameFileIdentity(ownedIdentity, pathnameIdentity)) {
-          throw new Error('The lock directory pathname no longer names the acquired inode.');
-        }
-      } catch (error) {
-        throw markCompromised(error);
-      }
-    };
-
-    const guardOwnership = (): Promise<void> => {
-      const result = guardTail.then(performOwnershipGuard);
-      guardTail = result.then(() => undefined, () => undefined);
-      return result;
-    };
-
-    const scheduleHeartbeat = (): void => {
-      if (stopped || compromiseError) return;
-      heartbeatTimer = setTimeout(() => {
-        heartbeatTimer = undefined;
-        void guardOwnership().then(scheduleHeartbeat, () => undefined);
-      }, this.lockUpdateMs);
-      heartbeatTimer.unref?.();
-    };
-    scheduleHeartbeat();
-
-    const closeOwnedHandle = async (): Promise<void> => {
-      if (closed) return;
-      closed = true;
-      await ownedHandle.close();
-    };
-
-    const releaseOwnedLock = async (): Promise<void> => {
-      stopped = true;
-      if (heartbeatTimer) clearTimeout(heartbeatTimer);
-      await guardTail;
-
-      if (compromiseError) {
-        try {
-          await closeOwnedHandle();
-        } catch {
-          // Preserve the compromise error and never touch the replacement pathname.
-        }
-        throw compromiseError;
-      }
-
-      try {
-        await guardOwnership();
-      } catch (error) {
-        try {
-          await closeOwnedHandle();
-        } catch {
-          // Preserve the ownership error and never touch a possibly replaced pathname.
-        }
-        throw error;
-      }
-      await closeOwnedHandle();
-      await rmdir(this.lockPath);
-    };
-
-    return {
-      guardOwnership,
-      getCompromiseError: () => compromiseError,
-      release: () => this.releaseLock(releaseOwnedLock),
-    };
-  }
-
-  private async writeManifest(
-    manifest: SharedSettingsManifest,
-    guardOwnership: () => Promise<void>,
-  ): Promise<void> {
-    const stagingPath = path.join(
-      this.directory,
-      `.${SHARED_SETTINGS_MANIFEST_FILE_NAME}.${process.pid}.${randomUUID()}.tmp`,
-    );
-    let operationFailed = false;
-
-    try {
-      const handle = await open(stagingPath, 'wx', 0o600);
-      let writeFailed = false;
-      try {
-        await handle.writeFile(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
-        await handle.sync();
-      } catch (error) {
-        writeFailed = true;
-        throw error;
-      } finally {
-        try {
-          await handle.close();
-        } catch (error) {
-          if (!writeFailed) throw error;
-        }
-      }
-
-      let passedPublisherBarrier = false;
-      await this.publishStagedFile(stagingPath, this.manifestPath, async () => {
-        if (!passedPublisherBarrier) {
-          passedPublisherBarrier = true;
-          // Deterministic barrier immediately before the first atomic rename attempt.
-          await this.beforePublishStagedFile();
-        }
-        // Renew and prove ownership after blocked work and before every rename attempt.
-        await guardOwnership();
-      });
-    } catch (error) {
-      operationFailed = true;
-      throw error;
-    } finally {
-      try {
-        await unlink(stagingPath);
-      } catch (error) {
-        if (!isNodeError(error, 'ENOENT') && !operationFailed) throw error;
-      }
-    }
+  private createPatchId(createdAt: Date, writerInstanceId: string): string {
+    processPatchSequence += 1n;
+    const milliseconds = String(createdAt.getTime()).padStart(16, '0');
+    const writer = createHash('sha256').update(writerInstanceId).digest('hex').slice(0, 16);
+    const sequence = processPatchSequence.toString(16).padStart(12, '0').slice(-12);
+    const random = this.randomBytes(16).toString('hex');
+    return `${milliseconds}-${writer}-${sequence}-${random}`;
   }
 }
