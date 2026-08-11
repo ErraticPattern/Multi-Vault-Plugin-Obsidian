@@ -1,3 +1,5 @@
+import type { SharedVirtualLinkSettings } from './shared-settings/shared-settings-types';
+
 export interface VaultConfig {
   id: string;
   name: string;
@@ -32,14 +34,24 @@ export interface IndexOptions {
   storeSnippetsInCache: boolean;
 }
 
+export interface SharedSettingsMetadata {
+  lastAppliedRevision?: number;
+  lastAppliedAt?: string;
+  localParticipationOverride?: boolean;
+}
+
 export interface MultiVaultSettings {
   vaults: VaultConfig[];
   indexOptions: IndexOptions;
   savedSearches: { id: string, name: string, query: string }[];
   pinnedFiles: string[];
   uiStyle?: 'classic' | 'modern';
+  sharedSettingsEnabled?: boolean;
+  excludedVaultIds?: string[];
   showCrossVaultBadge: boolean;
   useVaultColorForLinks: boolean;
+  virtualLinks?: SharedVirtualLinkSettings;
+  sharedSettings?: SharedSettingsMetadata;
 }
 
 export interface IndexCache {
@@ -59,6 +71,16 @@ export const DEFAULT_SETTINGS: MultiVaultSettings = {
   savedSearches: [],
   pinnedFiles: [],
   uiStyle: 'classic',
+  sharedSettingsEnabled: false,
+  excludedVaultIds: [],
   showCrossVaultBadge: true,
-  useVaultColorForLinks: false
+  useVaultColorForLinks: false,
+  virtualLinks: {
+    enabled: false,
+    excludedSourceVaultIds: [],
+    targetVaultIdsBySource: {},
+    colorMode: 'soft-pill',
+    colorIntensity: 50
+  },
+  sharedSettings: {}
 };
