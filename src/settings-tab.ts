@@ -1,8 +1,12 @@
 import { App, ButtonComponent, Notice, PluginSettingTab, Setting, SettingDefinitionItem, SettingGroupItem, requireApiVersion } from 'obsidian';
 import { VaultRegistry } from './vault-registry';
 import { Indexer } from './indexer/indexer';
-import MultiVaultNavigatorPlugin from './main';
+import type MultiVaultNavigatorPlugin from './main';
 import { ExcludeSuggestModal } from './modals/exclude-suggest-modal';
+import { VirtualLinkTargetsModal } from './modals/virtual-link-targets-modal';
+import type { SharedSettingsPatch } from './shared-settings/shared-settings-store';
+import type { VirtualLinkColorMode } from './shared-settings/shared-settings-types';
+import { normalizeExistingPathKey, normalizePathDisplay } from './shared-settings/path-identity';
 
 // Loose shape for manually rendering 1.13-style setting definitions on 1.12.x.
 type ManualRenderItem = {
@@ -40,17 +44,28 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
   // display(). 1.12.x has no declarative support and calls display() — render
   // the same schema manually there so one codebase serves both versions.
   display(): void {
-    if (requireApiVersion('1.13.0')) return;
-    this.renderDefinitionsManually();
+    void this.applyLatestAndRender(false);
   }
 
   update(): void {
-    const nativeUpdate = (PluginSettingTab.prototype as unknown as { update?: () => void }).update;
-    if (requireApiVersion('1.13.0') && typeof nativeUpdate === 'function') {
-      nativeUpdate.call(this);
-    } else {
-      this.renderDefinitionsManually();
+    void this.applyLatestAndRender(true);
+  }
+
+  private async applyLatestAndRender(useNativeUpdate: boolean): Promise<void> {
+    const service = this.plugin.sharedSettingsService;
+    if (service) {
+      const result = await service.applyLatest(true);
+      if (result.kind === 'error') {
+        new Notice(`Shared configuration could not be refreshed: ${result.message}`);
+      }
     }
+
+    const nativeUpdate = (PluginSettingTab.prototype as unknown as { update?: () => void }).update;
+    if (requireApiVersion('1.13.0')) {
+      if (useNativeUpdate && typeof nativeUpdate === 'function') nativeUpdate.call(this);
+      return;
+    }
+    this.renderDefinitionsManually();
   }
 
   private renderDefinitionsManually(): void {
@@ -95,22 +110,22 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
         name: nameText,
         desc: vault.path,
         render: (setting: Setting) => {
+          const changeColor = async (value: string): Promise<void> => {
+            await this.changeSharedSetting(
+              { kind: 'set-vault-color', vaultId: vault.id, color: value },
+              () => this.vaultRegistry.updateVault(vault.id, { color: value }),
+            );
+          };
           if (typeof setting.addColorPicker === 'function') {
             setting.addColorPicker(color => color
               .setValue(vault.color || '#000000')
-              .onChange(async (value) => {
-                this.vaultRegistry.updateVault(vault.id, { color: value });
-                await this.plugin.saveSettings();
-              })
+              .onChange(changeColor)
             );
           } else {
             setting.addText(text => text
               .setPlaceholder("#Hex")
               .setValue(vault.color || '#000000')
-              .onChange(async (value) => {
-                this.vaultRegistry.updateVault(vault.id, { color: value });
-                await this.plugin.saveSettings();
-              })
+              .onChange(changeColor)
             );
           }
           setting
@@ -118,23 +133,29 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
               .setPlaceholder("Icon")
               .setValue(vault.icon || "")
               .onChange(async (value) => {
-                this.vaultRegistry.updateVault(vault.id, { icon: value });
-                await this.plugin.saveSettings();
+                await this.changeSharedSetting(
+                  { kind: 'set-vault-icon', vaultId: vault.id, icon: value || undefined },
+                  () => this.vaultRegistry.updateVault(vault.id, { icon: value || undefined }),
+                );
               })
             )
             .addToggle(toggle => toggle
               .setValue(vault.enabled)
               .onChange(async (value) => {
-                this.vaultRegistry.updateVault(vault.id, { enabled: value });
-                await this.plugin.saveSettings();
+                await this.changeSharedSetting(
+                  { kind: 'set-vault-enabled', vaultId: vault.id, enabled: value },
+                  () => this.vaultRegistry.updateVault(vault.id, { enabled: value }),
+                );
               })
             )
             .addButton(button => {
               button.setButtonText("Remove");
               markButtonDestructive(button);
               return button.onClick(async () => {
-                this.vaultRegistry.removeVault(vault.id);
-                await this.plugin.saveSettings();
+                await this.changeSharedSetting(
+                  { kind: 'remove-vault', vaultId: vault.id },
+                  () => this.vaultRegistry.removeVault(vault.id),
+                );
                 this.update();
               });
             });
@@ -142,7 +163,175 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
       };
     });
 
+    const sharedEnabled = this.plugin.isSharedConfigurationEnabled();
+    const virtualLinks = this.plugin.settings.virtualLinks ?? {
+      enabled: false,
+      excludedSourceVaultIds: [],
+      targetVaultIdsBySource: {},
+      colorMode: 'soft-pill' as const,
+      colorIntensity: 55,
+    };
+    const sharedConfigurationItems: SettingGroupItem[] = [
+      {
+        name: 'Enable shared configuration',
+        desc: 'Synchronize canonical vault identity, appearance, participation, and Virtual Linker scope.',
+        render: (setting: Setting) => {
+          setting.addToggle((toggle) => toggle
+            .setValue(sharedEnabled)
+            .onChange(async (enabled) => {
+              await this.plugin.setSharedConfigurationEnabled(enabled);
+              this.update();
+            }));
+        },
+      },
+      {
+        name: 'Sync now',
+        desc: 'Force a check and reapply the latest shared revision.',
+        render: (setting: Setting) => {
+          setting.addButton((button) => button
+            .setButtonText('Sync now')
+            .setCta()
+            .onClick(async () => {
+              await this.plugin.syncSharedConfigurationNow();
+              this.update();
+            }));
+        },
+      },
+      {
+        name: 'Show status',
+        desc: 'Show journal path, revisions, participation, last application, and errors.',
+        render: (setting: Setting) => {
+          setting.addButton((button) => button
+            .setButtonText('Show status')
+            .onClick(() => this.plugin.showSharedConfigurationStatus()));
+        },
+      },
+      ...vaults.map((vault): SettingGroupItem => ({
+        name: `Shared participation: ${vault.name}`,
+        desc: vault.path,
+        render: (setting: Setting) => {
+          const isCurrent = this.vaultRegistry.getCurrentVaultId() === vault.id;
+          const excluded = isCurrent && this.plugin.sharedSettingsService?.getStatus().excluded
+            ? true
+            : this.plugin.settings.excludedVaultIds?.includes(vault.id) === true;
+          setting.addToggle((toggle) => toggle
+            .setValue(!excluded)
+            .onChange(async (participating) => {
+              await this.changeSharedSetting(
+                { kind: 'set-vault-excluded', vaultId: vault.id, excluded: !participating },
+                () => {
+                  const exclusions = new Set(this.plugin.settings.excludedVaultIds ?? []);
+                  if (participating) exclusions.delete(vault.id);
+                  else exclusions.add(vault.id);
+                  this.plugin.settings.excludedVaultIds = [...exclusions];
+                },
+              );
+            }));
+        },
+      })),
+      {
+        name: 'Enable Virtual Linker integration',
+        desc: 'Expose explicitly selected external vault targets through the optional integration.',
+        render: (setting: Setting) => {
+          setting.addToggle((toggle) => toggle
+            .setValue(virtualLinks.enabled)
+            .onChange(async (enabled) => {
+              await this.changeSharedSetting(
+                { kind: 'set-virtual-links-enabled', enabled },
+                () => { this.ensureVirtualLinks().enabled = enabled; },
+              );
+            }));
+        },
+      },
+      ...vaults.map((sourceVault): SettingGroupItem => ({
+        name: `Virtual Linker targets from ${sourceVault.name}`,
+        desc: 'Choose external target vaults for this source vault. No targets are selected by default.',
+        render: (setting: Setting) => {
+          const sourceExcluded = virtualLinks.excludedSourceVaultIds.includes(sourceVault.id);
+          setting.addToggle((toggle) => toggle
+            .setValue(!sourceExcluded)
+            .onChange(async (participating) => {
+              await this.changeSharedSetting(
+                {
+                  kind: 'set-virtual-link-source-excluded',
+                  vaultId: sourceVault.id,
+                  excluded: !participating,
+                },
+                () => {
+                  const links = this.ensureVirtualLinks();
+                  const exclusions = new Set(links.excludedSourceVaultIds);
+                  if (participating) exclusions.delete(sourceVault.id);
+                  else exclusions.add(sourceVault.id);
+                  links.excludedSourceVaultIds = [...exclusions];
+                },
+              );
+            }));
+          setting.addButton((button) => button
+            .setButtonText('Select targets')
+            .onClick(() => {
+              const selected = this.ensureVirtualLinks().targetVaultIdsBySource[sourceVault.id] ?? [];
+              new VirtualLinkTargetsModal(
+                this.app,
+                sourceVault,
+                vaults,
+                selected,
+                async (targetVaultIds) => {
+                  await this.changeSharedSetting(
+                    { kind: 'set-virtual-link-targets', sourceVaultId: sourceVault.id, targetVaultIds },
+                    () => { this.ensureVirtualLinks().targetVaultIdsBySource[sourceVault.id] = [...targetVaultIds]; },
+                  );
+                },
+              ).open();
+            }));
+        },
+      })),
+      {
+        name: 'Virtual-link color mode',
+        desc: 'Choose how target-vault provenance is styled.',
+        render: (setting: Setting) => {
+          setting.addDropdown((dropdown) => dropdown
+            .addOption('off', 'Off')
+            .addOption('muted-text', 'Muted text')
+            .addOption('colored-underline', 'Colored underline')
+            .addOption('soft-pill', 'Soft pill')
+            .setValue(virtualLinks.colorMode)
+            .onChange(async (mode) => {
+              const colorMode = mode as VirtualLinkColorMode;
+              await this.changeSharedSetting(
+                { kind: 'set-virtual-link-style', mode: colorMode, intensity: this.virtualLinkIntensity() },
+                () => { this.ensureVirtualLinks().colorMode = colorMode; },
+              );
+            }));
+        },
+      },
+      {
+        name: 'Virtual-link color intensity',
+        desc: 'Set provenance color intensity from 10 to 90 percent.',
+        render: (setting: Setting) => {
+          setting.addSlider((slider) => slider
+            .setLimits(10, 90, 1)
+            .setValue(this.virtualLinkIntensity())
+            .setDynamicTooltip()
+            .onChange(async (intensity) => {
+              await this.changeSharedSetting(
+                {
+                  kind: 'set-virtual-link-style',
+                  mode: this.ensureVirtualLinks().colorMode,
+                  intensity,
+                },
+                () => { this.ensureVirtualLinks().colorIntensity = intensity; },
+              );
+            }));
+        },
+      },
+    ];
+
     return [
+      {
+        type: 'group',
+        heading: 'Shared configuration',
+        items: sharedConfigurationItems,
+      },
       {
         type: 'group',
         heading: 'Auto-detect Vaults',
@@ -180,17 +369,29 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
                   .onClick(async () => {
                     if (this.newVaultPath) {
                       const name = this.newVaultPath.split(/[/\\]/).pop() || "Unnamed Vault";
-                      const success = this.vaultRegistry.addVault({
+                      const vault = {
                         id: `vault-${Date.now()}`,
                         name,
                         path: this.newVaultPath,
-                        enabled: true
-                      });
-                      if (success) {
-                        this.newVaultPath = "";
-                        await this.plugin.saveSettings();
-                        this.update();
+                        enabled: true,
+                      };
+                      if (!this.vaultRegistry.validateVaultPath(vault.path)) {
+                        new Notice(`Invalid vault path: ${vault.path}`);
+                        return;
                       }
+                      await this.changeSharedSetting(
+                        {
+                          kind: 'upsert-vault',
+                          vault: {
+                            ...vault,
+                            path: normalizePathDisplay(vault.path, process.platform),
+                            pathKey: normalizeExistingPathKey(vault.path, process.platform),
+                          },
+                        },
+                        () => { this.vaultRegistry.addVault(vault); },
+                      );
+                      this.newVaultPath = "";
+                      this.update();
                     }
                   })
                 );
@@ -303,8 +504,14 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
               setting.addToggle(toggle => toggle
                 .setValue(this.plugin.settings.showCrossVaultBadge !== false)
                 .onChange(async (value) => {
-                  this.plugin.settings.showCrossVaultBadge = value;
-                  await this.plugin.saveSettings();
+                  await this.changeSharedSetting(
+                    {
+                      kind: 'set-cross-vault-appearance',
+                      showBadge: value,
+                      useColor: this.plugin.settings.useVaultColorForLinks,
+                    },
+                    () => { this.plugin.settings.showCrossVaultBadge = value; },
+                  );
                 })
               );
             }
@@ -316,8 +523,14 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
               setting.addToggle(toggle => toggle
                 .setValue(this.plugin.settings.useVaultColorForLinks === true)
                 .onChange(async (value) => {
-                  this.plugin.settings.useVaultColorForLinks = value;
-                  await this.plugin.saveSettings();
+                  await this.changeSharedSetting(
+                    {
+                      kind: 'set-cross-vault-appearance',
+                      showBadge: this.plugin.settings.showCrossVaultBadge,
+                      useColor: value,
+                    },
+                    () => { this.plugin.settings.useVaultColorForLinks = value; },
+                  );
                 })
               );
             }
@@ -346,6 +559,45 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
         ]
       }
     ];
+  }
+
+  private ensureVirtualLinks(): NonNullable<typeof this.plugin.settings.virtualLinks> {
+    if (!this.plugin.settings.virtualLinks) {
+      this.plugin.settings.virtualLinks = {
+        enabled: false,
+        excludedSourceVaultIds: [],
+        targetVaultIdsBySource: {},
+        colorMode: 'soft-pill',
+        colorIntensity: 55,
+      };
+    }
+    return this.plugin.settings.virtualLinks;
+  }
+
+  private virtualLinkIntensity(): number {
+    const intensity = this.ensureVirtualLinks().colorIntensity;
+    return Number.isInteger(intensity) ? Math.min(90, Math.max(10, intensity)) : 55;
+  }
+
+  private async changeSharedSetting(
+    patch: SharedSettingsPatch,
+    changeLocalSetting: () => void,
+  ): Promise<void> {
+    const service = this.plugin.sharedSettingsService;
+    if (service?.getStatus().enabled) {
+      const result = await service.publish(patch);
+      if (result.kind === 'error') {
+        new Notice(`Shared configuration change failed: ${result.message}`);
+      } else if (result.kind === 'excluded') {
+        new Notice('This vault is excluded and cannot publish shared configuration changes.');
+      } else if (result.kind === 'disabled') {
+        new Notice('Shared configuration is disabled.');
+      }
+      return;
+    }
+
+    changeLocalSetting();
+    await this.plugin.saveSettings();
   }
 
   private async addExcludePattern(selectedItem: string): Promise<void> {

@@ -97,6 +97,20 @@ export class Modal {
   }
 }
 
+export class PluginSettingTab {
+  containerEl = new FakeElement('div');
+
+  constructor(public readonly app: App, public readonly plugin: unknown) {}
+
+  display(): void {}
+
+  update(): void {}
+}
+
+export function requireApiVersion(_version: string): boolean {
+  return false;
+}
+
 export class ButtonComponent {
   buttonText = '';
   disabled = false;
@@ -187,6 +201,42 @@ export class DropdownComponent {
   }
 }
 
+export class SliderComponent {
+  value = 0;
+  minimum = 0;
+  maximum = 100;
+  step = 1;
+  dynamicTooltip = false;
+  private onChangeHandler: ChangeHandler<number> = () => undefined;
+
+  setLimits(minimum: number, maximum: number, step: number): this {
+    this.minimum = minimum;
+    this.maximum = maximum;
+    this.step = step;
+    return this;
+  }
+
+  setValue(value: number): this {
+    this.value = value;
+    return this;
+  }
+
+  setDynamicTooltip(): this {
+    this.dynamicTooltip = true;
+    return this;
+  }
+
+  onChange(handler: ChangeHandler<number>): this {
+    this.onChangeHandler = handler;
+    return this;
+  }
+
+  async triggerChange(value: number): Promise<unknown> {
+    this.value = value;
+    return await this.onChangeHandler(value);
+  }
+}
+
 export class TextComponent {
   value = '';
   placeholder = '';
@@ -228,6 +278,7 @@ export class Setting {
   texts: TextComponent[] = [];
   textAreas: TextAreaComponent[] = [];
   colorPickers: ColorComponent[] = [];
+  sliders: SliderComponent[] = [];
 
   constructor(containerEl: FakeElement) {
     containerEl.settings.push(this);
@@ -288,6 +339,13 @@ export class Setting {
     const color = new ColorComponent();
     this.colorPickers.push(color);
     callback(color);
+    return this;
+  }
+
+  addSlider(callback: (slider: SliderComponent) => unknown): this {
+    const slider = new SliderComponent();
+    this.sliders.push(slider);
+    callback(slider);
     return this;
   }
 }

@@ -80,7 +80,7 @@ export const DEFAULT_SETTINGS: MultiVaultSettings = {
     excludedSourceVaultIds: [],
     targetVaultIdsBySource: {},
     colorMode: 'soft-pill',
-    colorIntensity: 50
+    colorIntensity: 55
   },
   sharedSettings: {}
 };

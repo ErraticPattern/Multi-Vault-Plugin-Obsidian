@@ -26,7 +26,13 @@ import { SharedSettingsStore } from './shared-settings/shared-settings-store';
 import {
   SharedSettingsService,
   resolveSharedSettingsApplicationDataRoot,
+  type SyncApplyResult,
 } from './shared-settings/shared-settings-service';
+import { loadIdeasSeed, SharedSettingsSeedModal } from './modals/shared-settings-seed-modal';
+import { SharedSettingsStatusModal } from './modals/shared-settings-status-modal';
+
+export const SYNC_SHARED_SETTINGS_COMMAND_ID = 'multi-vault-sync-shared-settings';
+export const SHOW_SHARED_SETTINGS_STATUS_COMMAND_ID = 'multi-vault-show-sync-status';
 
 export default class MultiVaultNavigatorPlugin extends Plugin {
   settings: MultiVaultSettings = Object.assign({}, DEFAULT_SETTINGS);
@@ -36,17 +42,21 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
   fileOpener: FileOpener;
   migrationController: MigrationController;
   sharedSettingsService: SharedSettingsService | null = null;
+  private sharedSettingsStore: SharedSettingsStore | null = null;
+  private sharedSettingsWriterInstanceId: string | null = null;
 
   async onload() {
     await this.loadSettings();
 
     const adapter = this.app.vault.adapter;
     if (adapter instanceof FileSystemAdapter) {
+      this.sharedSettingsStore = new SharedSettingsStore(resolveSharedSettingsApplicationDataRoot());
+      this.sharedSettingsWriterInstanceId = randomUUID();
       this.sharedSettingsService = new SharedSettingsService({
-        store: new SharedSettingsStore(resolveSharedSettingsApplicationDataRoot()),
+        store: this.sharedSettingsStore,
         settings: this.settings,
         currentVaultPath: adapter.getBasePath(),
-        writerInstanceId: randomUUID(),
+        writerInstanceId: this.sharedSettingsWriterInstanceId,
         setInterval: (callback, milliseconds) => (
           window.setInterval(callback, milliseconds) as unknown as ReturnType<typeof globalThis.setInterval>
         ),
@@ -223,6 +233,22 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
       }
     });
 
+    this.addCommand({
+      id: SYNC_SHARED_SETTINGS_COMMAND_ID,
+      name: 'Sync shared configuration now',
+      callback: async () => {
+        await this.syncSharedConfigurationNow();
+      },
+    });
+
+    this.addCommand({
+      id: SHOW_SHARED_SETTINGS_STATUS_COMMAND_ID,
+      name: 'Show shared configuration status',
+      callback: () => {
+        this.showSharedConfigurationStatus();
+      },
+    });
+
     // Register protocol handler
     this.registerObsidianProtocolHandler("mvn-open", async (params) => {
        const vaultId = params.vaultId;
@@ -289,6 +315,103 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
   async saveSettings() {
     this.settings.vaults = this.vaultRegistry.getVaults();
     await this.saveData(this.settings);
+  }
+
+  isSharedConfigurationEnabled(): boolean {
+    return this.sharedSettingsService?.getStatus().enabled
+      ?? this.settings.sharedSettingsEnabled === true;
+  }
+
+  async setSharedConfigurationEnabled(enabled: boolean): Promise<void> {
+    const service = this.sharedSettingsService;
+    const store = this.sharedSettingsStore;
+    const writerInstanceId = this.sharedSettingsWriterInstanceId;
+    if (!service || !store || !writerInstanceId) {
+      new Notice('Shared configuration requires a filesystem-backed desktop vault.');
+      return;
+    }
+
+    if (!enabled) {
+      const result = await service.publish({ kind: 'set-enabled', enabled: false });
+      if (result.kind === 'disabled') {
+        this.settings.sharedSettingsEnabled = false;
+        await this.saveData(this.settings);
+      } else {
+        this.reportSharedSyncResult(result, 'Shared configuration');
+      }
+      return;
+    }
+
+    let existing;
+    try {
+      existing = await store.read();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(`Shared configuration remains off: ${message}`);
+      return;
+    }
+
+    if (existing) {
+      const result = await service.publish({ kind: 'set-enabled', enabled: true });
+      this.reportSharedSyncResult(result, 'Shared configuration');
+      return;
+    }
+
+    try {
+      const loaded = await loadIdeasSeed(this.vaultRegistry.getVaults(), this.app.vault.configDir);
+      new SharedSettingsSeedModal(
+        this.app,
+        store,
+        writerInstanceId,
+        loaded.seed,
+        loaded.dataPath,
+        async () => {
+          const result = await service.applyLatest(true);
+          this.reportSharedSyncResult(result, 'Shared configuration initialized');
+        },
+      ).open();
+    } catch (error) {
+      this.settings.sharedSettingsEnabled = false;
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(`Shared configuration remains off: ${message}`);
+    }
+  }
+
+  async syncSharedConfigurationNow(): Promise<SyncApplyResult | null> {
+    if (!this.sharedSettingsService) {
+      new Notice('Shared configuration is unavailable for this vault.');
+      return null;
+    }
+    const result = await this.sharedSettingsService.applyLatest(true);
+    this.reportSharedSyncResult(result, 'Shared configuration sync');
+    return result;
+  }
+
+  showSharedConfigurationStatus(): void {
+    if (!this.sharedSettingsService) {
+      new Notice('Shared configuration is unavailable for this vault.');
+      return;
+    }
+    new SharedSettingsStatusModal(this.app, this.sharedSettingsService.getStatus()).open();
+  }
+
+  private reportSharedSyncResult(result: SyncApplyResult, subject: string): void {
+    switch (result.kind) {
+      case 'applied':
+        new Notice(`${subject}: applied revision ${result.revision}.`);
+        return;
+      case 'unchanged':
+        new Notice(`${subject}: already current${result.revision === null ? '' : ` at revision ${result.revision}`}.`);
+        return;
+      case 'disabled':
+        new Notice(`${subject}: synchronization is disabled at revision ${result.revision ?? 'unknown'}.`);
+        return;
+      case 'excluded':
+        new Notice(`${subject}: this vault is excluded at revision ${result.revision}.`);
+        return;
+      case 'error':
+        new Notice(`${subject} failed: ${result.message}`);
+    }
   }
 
   public refreshSidebar() {

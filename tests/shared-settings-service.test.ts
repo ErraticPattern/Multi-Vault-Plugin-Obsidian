@@ -169,6 +169,21 @@ describe('SharedSettingsService lifecycle', () => {
     expect(hobbiesSettings.vaults.find((vault) => vault.id === 'medicine')?.color).toBe('#222222');
   });
 
+  it('allows the explicit global control patch to re-enable a disabled journal', async () => {
+    const { store } = await fixture();
+    await store.patch({ kind: 'set-enabled', enabled: false }, 'administrator');
+    const settings = localSettings('#222222');
+    const medicine = service(store, settings, 'medicine');
+
+    await expect(medicine.initialize()).resolves.toEqual({ kind: 'disabled', revision: 1 });
+    await expect(medicine.publish({ kind: 'set-enabled', enabled: true })).resolves.toMatchObject({
+      kind: 'applied',
+      revision: 2,
+    });
+    expect((await store.read())?.enabled).toBe(true);
+    expect(settings.sharedSettingsEnabled).toBe(true);
+  });
+
   it('leaves the local mirror untouched while synchronization is globally disabled', async () => {
     const { store } = await fixture();
     await store.patch({ kind: 'set-enabled', enabled: false }, 'administrator');
@@ -183,6 +198,7 @@ describe('SharedSettingsService lifecycle', () => {
     })).resolves.toEqual({ kind: 'disabled', revision: 1 });
 
     expect(medicineSettings.vaults.find((vault) => vault.id === 'medicine')?.color).toBe('#222222');
+    expect(medicineSettings.sharedSettingsEnabled).toBe(false);
     expect((await store.read())?.revision).toBe(1);
   });
 

@@ -273,7 +273,7 @@ export class SharedSettingsService {
       }
 
       this.lastValidManifest = current;
-      if (!current.enabled) {
+      if (!current.enabled && patch.kind !== 'set-enabled') {
         this.lastError = null;
         return { kind: 'disabled', revision: current.revision };
       }
@@ -349,7 +349,18 @@ export class SharedSettingsService {
   }
 
   private async applyManifest(manifest: SharedSettingsManifest, force = false): Promise<SyncApplyResult> {
-    if (!manifest.enabled) return { kind: 'disabled', revision: manifest.revision };
+    if (!manifest.enabled) {
+      const changed = this.settings.sharedSettingsEnabled !== false;
+      this.settings.sharedSettingsEnabled = false;
+      if (changed && this.runtime?.saveLocalMirror) {
+        try {
+          await this.runtime.saveLocalMirror(this.settings);
+        } catch (error) {
+          this.lastError = `Shared settings were disabled, but the local mirror could not be saved: ${errorMessage(error)}`;
+        }
+      }
+      return { kind: 'disabled', revision: manifest.revision };
+    }
     if (this.isCurrentVaultExcluded(manifest)) return { kind: 'excluded', revision: manifest.revision };
     if (!force && this.lastAppliedRevision !== null && manifest.revision <= this.lastAppliedRevision) {
       return { kind: 'unchanged', revision: manifest.revision };

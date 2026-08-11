@@ -24,7 +24,7 @@ const DEFAULT_VIRTUAL_LINKS: SharedVirtualLinkSettings = {
   excludedSourceVaultIds: [],
   targetVaultIdsBySource: {},
   colorMode: 'soft-pill',
-  colorIntensity: 50,
+  colorIntensity: 55,
 };
 
 interface CanonicalVaultCandidate {
