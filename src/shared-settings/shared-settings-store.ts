@@ -4,11 +4,13 @@ import {
   open,
   readFile,
   rename,
+  rmdir,
+  stat,
   unlink,
+  utimes,
+  type FileHandle,
 } from 'node:fs/promises';
 import path from 'node:path';
-import * as properLockfile from 'proper-lockfile';
-import type { LockOptions } from 'proper-lockfile';
 
 import {
   InvalidSharedSettingsError,
@@ -61,7 +63,6 @@ export type SharedSettingsPatch =
   | { kind: 'set-virtual-link-style'; mode: VirtualLinkColorMode; intensity: number };
 
 type ReleaseLock = () => Promise<void>;
-type LockFile = (file: string, options: LockOptions) => Promise<ReleaseLock>;
 
 export interface SharedSettingsStoreOptions {
   lockTimeoutMs?: number;
@@ -70,16 +71,24 @@ export interface SharedSettingsStoreOptions {
   retryMinMs?: number;
   retryMaxMs?: number;
   now?: () => Date;
+  lockNow?: () => number;
+  sleep?: (milliseconds: number) => Promise<void>;
+  random?: () => number;
   publishStagedFile?: (stagingPath: string, manifestPath: string) => Promise<void>;
-  lockFile?: LockFile;
   beforePublishStagedFile?: () => Promise<void>;
+  releaseLock?: (release: ReleaseLock) => Promise<void>;
   onLockCompromised?: (error: Error) => void;
 }
 
 interface LockLease {
   release: ReleaseLock;
-  assertActive: () => void;
+  guardOwnership: () => Promise<void>;
   getCompromiseError: () => Error | undefined;
+}
+
+interface FileIdentity {
+  dev: bigint;
+  ino: bigint;
 }
 
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
@@ -87,6 +96,14 @@ function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoExcepti
     && error !== null
     && 'code' in error
     && (error as NodeJS.ErrnoException).code === code;
+}
+
+function fileIdentity(stats: { dev: bigint; ino: bigint }): FileIdentity {
+  return { dev: stats.dev, ino: stats.ino };
+}
+
+function sameFileIdentity(left: FileIdentity, right: FileIdentity): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -382,18 +399,24 @@ function applyPatch(manifest: SharedSettingsManifest, patch: SharedSettingsPatch
   }
 }
 
-function sleep(milliseconds: number): Promise<void> {
+function defaultSleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function defaultPublishStagedFile(stagingPath: string, manifestPath: string): Promise<void> {
+async function defaultPublishStagedFile(
+  stagingPath: string,
+  manifestPath: string,
+  beforeRename: () => Promise<void>,
+): Promise<void> {
   if (process.platform !== 'win32') {
+    await beforeRename();
     await rename(stagingPath, manifestPath);
     return;
   }
 
   const deadline = Date.now() + WINDOWS_RENAME_RETRY_MS;
   while (true) {
+    await beforeRename();
     try {
       // Node's Windows rename uses replacement semantics. Never unlink the destination first:
       // readers must always observe either the old complete file or the new complete file.
@@ -404,7 +427,7 @@ async function defaultPublishStagedFile(stagingPath: string, manifestPath: strin
         || isNodeError(error, 'EPERM')
         || isNodeError(error, 'EBUSY');
       if (!retryable || Date.now() >= deadline) throw error;
-      await sleep(Math.min(20, Math.max(1, deadline - Date.now())));
+      await defaultSleep(Math.min(20, Math.max(1, deadline - Date.now())));
     }
   }
 }
@@ -420,9 +443,16 @@ export class SharedSettingsStore {
   private readonly retryMinMs: number;
   private readonly retryMaxMs: number;
   private readonly now: () => Date;
-  private readonly publishStagedFile: (stagingPath: string, manifestPath: string) => Promise<void>;
-  private readonly lockFile: LockFile;
+  private readonly lockNow: () => number;
+  private readonly sleep: (milliseconds: number) => Promise<void>;
+  private readonly random: () => number;
+  private readonly publishStagedFile: (
+    stagingPath: string,
+    manifestPath: string,
+    beforeRename: () => Promise<void>,
+  ) => Promise<void>;
   private readonly beforePublishStagedFile: () => Promise<void>;
+  private readonly releaseLock: (release: ReleaseLock) => Promise<void>;
   private readonly onLockCompromised?: (error: Error) => void;
   private writeQueue: Promise<void> = Promise.resolve();
 
@@ -439,9 +469,17 @@ export class SharedSettingsStore {
     this.retryMinMs = Math.max(1, options.retryMinMs ?? DEFAULT_RETRY_MIN_MS);
     this.retryMaxMs = Math.max(this.retryMinMs, options.retryMaxMs ?? DEFAULT_RETRY_MAX_MS);
     this.now = options.now ?? (() => new Date());
-    this.publishStagedFile = options.publishStagedFile ?? defaultPublishStagedFile;
-    this.lockFile = options.lockFile ?? properLockfile.lock;
+    this.lockNow = options.lockNow ?? Date.now;
+    this.sleep = options.sleep ?? defaultSleep;
+    this.random = options.random ?? Math.random;
+    this.publishStagedFile = options.publishStagedFile
+      ? async (stagingPath, manifestPath, beforeRename) => {
+        await beforeRename();
+        await options.publishStagedFile!(stagingPath, manifestPath);
+      }
+      : defaultPublishStagedFile;
     this.beforePublishStagedFile = options.beforePublishStagedFile ?? (async () => undefined);
+    this.releaseLock = options.releaseLock ?? (async (release) => release());
     this.onLockCompromised = options.onLockCompromised;
   }
 
@@ -471,7 +509,7 @@ export class SharedSettingsStore {
   async initialize(seed: SharedSettingsProjection, writerInstanceId: string): Promise<SharedSettingsManifest> {
     return this.serializeWrite(async () => {
       await mkdir(this.directory, { recursive: true });
-      return this.withLock(async (assertLockActive) => {
+      return this.withLock(async (guardOwnership) => {
         const existing = await this.read();
         if (existing) {
           throw new SharedSettingsAlreadyInitializedError(
@@ -487,7 +525,7 @@ export class SharedSettingsStore {
           writerInstanceId,
         } as SharedSettingsManifest;
         validateManifest(manifest);
-        await this.writeManifest(manifest, assertLockActive);
+        await this.writeManifest(manifest, guardOwnership);
         return manifest;
       });
     });
@@ -496,7 +534,7 @@ export class SharedSettingsStore {
   async patch(patch: SharedSettingsPatch, writerInstanceId: string): Promise<SharedSettingsManifest> {
     return this.serializeWrite(async () => {
       await mkdir(this.directory, { recursive: true });
-      return this.withLock(async (assertLockActive) => {
+      return this.withLock(async (guardOwnership) => {
         const latest = await this.read();
         if (!latest) {
           throw new SharedSettingsNotInitializedError(
@@ -511,7 +549,7 @@ export class SharedSettingsStore {
           writerInstanceId,
         };
         validateManifest(next);
-        await this.writeManifest(next, assertLockActive);
+        await this.writeManifest(next, guardOwnership);
         return next;
       });
     });
@@ -524,7 +562,7 @@ export class SharedSettingsStore {
   }
 
   private async withLock(
-    operation: (assertLockActive: () => void) => Promise<SharedSettingsManifest>,
+    operation: (guardOwnership: () => Promise<void>) => Promise<SharedSettingsManifest>,
   ): Promise<SharedSettingsManifest> {
     const lease = await this.acquireLock();
     let operationFailed = false;
@@ -532,7 +570,7 @@ export class SharedSettingsStore {
     let result!: SharedSettingsManifest;
 
     try {
-      result = await operation(lease.assertActive);
+      result = await operation(lease.guardOwnership);
     } catch (error) {
       operationFailed = true;
       operationError = error;
@@ -557,63 +595,218 @@ export class SharedSettingsStore {
   }
 
   private async acquireLock(): Promise<LockLease> {
-    const startedAt = Date.now();
-    const retryInterval = Math.max(
-      this.retryMinMs,
-      Math.min(this.retryMaxMs, Math.max(1, this.lockTimeoutMs)),
+    const startedAt = this.lockNow();
+    const deadline = startedAt + this.lockTimeoutMs;
+    let lastContentionError: unknown;
+    let attempted = false;
+    const timeout = (): SharedSettingsLockTimeoutError => new SharedSettingsLockTimeoutError(
+      `Timed out after ${Math.max(0, this.lockNow() - startedAt)}ms waiting for ${this.lockPath}.`,
+      { cause: lastContentionError },
     );
-    const retries = this.lockTimeoutMs === 0 ? 0 : Math.floor(this.lockTimeoutMs / retryInterval);
-    let compromiseError: Error | undefined;
 
-    let release: ReleaseLock;
+    while (true) {
+      if (attempted && this.lockNow() >= deadline) throw timeout();
+      attempted = true;
+
+      try {
+        await mkdir(this.lockPath);
+        return await this.createLockLease();
+      } catch (error) {
+        if (!isNodeError(error, 'EEXIST')) throw error;
+        lastContentionError = error;
+        if (await this.expireStaleLock()) continue;
+      }
+
+      const remaining = deadline - this.lockNow();
+      if (remaining <= 0) throw timeout();
+
+      const randomFraction = Math.max(0, Math.min(1, this.random()));
+      const jitteredDelay = this.retryMinMs
+        + (this.retryMaxMs - this.retryMinMs) * randomFraction;
+      await this.sleep(Math.min(remaining, Math.max(1, jitteredDelay)));
+    }
+  }
+
+  private async expireStaleLock(): Promise<boolean> {
+    let first;
     try {
-      release = await this.lockFile(this.manifestPath, {
-        stale: this.staleLockMs,
-        update: this.lockUpdateMs,
-        realpath: false,
-        retries: {
-          retries,
-          factor: 1,
-          minTimeout: retryInterval,
-          maxTimeout: retryInterval,
-          randomize: false,
-        },
-        onCompromised: (error) => {
-          compromiseError = error;
-          try {
-            this.onLockCompromised?.(error);
-          } catch {
-            // A diagnostic callback must not replace the actual compromise error.
-          }
-        },
-      });
+      first = await stat(this.lockPath, { bigint: true });
     } catch (error) {
-      if (isNodeError(error, 'ELOCKED')) {
-        throw new SharedSettingsLockTimeoutError(
-          `Timed out after ${Date.now() - startedAt}ms waiting for ${this.lockPath}.`,
-          { cause: error },
-        );
+      if (isNodeError(error, 'ENOENT')) return true;
+      throw error;
+    }
+
+    if (Number(first.mtimeMs) >= this.lockNow() - this.staleLockMs) return false;
+
+    let second;
+    try {
+      second = await stat(this.lockPath, { bigint: true });
+    } catch (error) {
+      if (isNodeError(error, 'ENOENT')) return true;
+      throw error;
+    }
+
+    if (!sameFileIdentity(fileIdentity(first), fileIdentity(second))
+      || first.mtimeNs !== second.mtimeNs
+      || Number(second.mtimeMs) >= this.lockNow() - this.staleLockMs) {
+      return false;
+    }
+
+    try {
+      await rmdir(this.lockPath);
+      return true;
+    } catch (error) {
+      if (isNodeError(error, 'ENOENT')) return true;
+      if (isNodeError(error, 'ENOTEMPTY') || isNodeError(error, 'EEXIST')) return false;
+      throw error;
+    }
+  }
+
+  private async createLockLease(): Promise<LockLease> {
+    let handle: FileHandle | undefined;
+    let acquiredIdentity: FileIdentity | undefined;
+
+    try {
+      handle = await open(this.lockPath, 'r');
+      acquiredIdentity = fileIdentity(await handle.stat({ bigint: true }));
+      const pathnameIdentity = fileIdentity(await stat(this.lockPath, { bigint: true }));
+      if (!sameFileIdentity(acquiredIdentity, pathnameIdentity)) {
+        throw new Error('The lock directory changed while its ownership handle was being opened.');
+      }
+    } catch (error) {
+      try {
+        await handle?.close();
+      } catch {
+        // Preserve the acquisition error.
+      }
+      if (acquiredIdentity) {
+        try {
+          const pathnameIdentity = fileIdentity(await stat(this.lockPath, { bigint: true }));
+          if (sameFileIdentity(acquiredIdentity, pathnameIdentity)) await rmdir(this.lockPath);
+        } catch {
+          // Never blindly remove a pathname after acquisition identity was lost.
+        }
       }
       throw error;
     }
 
-    return {
-      release,
-      getCompromiseError: () => compromiseError,
-      assertActive: () => {
-        if (compromiseError) {
-          throw new SharedSettingsLockCompromisedError(
-            `The shared settings lock for ${this.manifestPath} was compromised before publication.`,
-            { cause: compromiseError },
-          );
+    const ownedHandle = handle;
+    const ownedIdentity = acquiredIdentity;
+    let compromiseError: SharedSettingsLockCompromisedError | undefined;
+    let stopped = false;
+    let closed = false;
+    let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
+    let guardTail: Promise<void> = Promise.resolve();
+
+    const markCompromised = (cause: unknown): SharedSettingsLockCompromisedError => {
+      if (!compromiseError) {
+        compromiseError = new SharedSettingsLockCompromisedError(
+          `The shared settings lock for ${this.manifestPath} was compromised before publication or release.`,
+          { cause },
+        );
+        try {
+          this.onLockCompromised?.(compromiseError);
+        } catch {
+          // A diagnostic callback must not replace the ownership error.
         }
-      },
+      }
+      return compromiseError;
+    };
+
+    const performOwnershipGuard = async (): Promise<void> => {
+      if (compromiseError) throw compromiseError;
+
+      try {
+        const handleIdentity = fileIdentity(await ownedHandle.stat({ bigint: true }));
+        if (!sameFileIdentity(ownedIdentity, handleIdentity)) {
+          throw new Error('The acquired lock directory handle changed identity.');
+        }
+
+        const renewalTime = new Date(this.lockNow());
+        try {
+          await ownedHandle.utimes(renewalTime, renewalTime);
+        } catch (error) {
+          // Windows does not support futimes on directory handles. Verify the pathname
+          // immediately before the fallback update, then verify it again below.
+          if (!isNodeError(error, 'EPERM') && !isNodeError(error, 'EISDIR') && !isNodeError(error, 'ENOSYS')) {
+            throw error;
+          }
+          const beforeRenewal = fileIdentity(await stat(this.lockPath, { bigint: true }));
+          if (!sameFileIdentity(ownedIdentity, beforeRenewal)) {
+            throw new Error('The lock directory pathname no longer names the acquired inode.');
+          }
+          await utimes(this.lockPath, renewalTime, renewalTime);
+        }
+
+        const pathnameIdentity = fileIdentity(await stat(this.lockPath, { bigint: true }));
+        if (!sameFileIdentity(ownedIdentity, pathnameIdentity)) {
+          throw new Error('The lock directory pathname no longer names the acquired inode.');
+        }
+      } catch (error) {
+        throw markCompromised(error);
+      }
+    };
+
+    const guardOwnership = (): Promise<void> => {
+      const result = guardTail.then(performOwnershipGuard);
+      guardTail = result.then(() => undefined, () => undefined);
+      return result;
+    };
+
+    const scheduleHeartbeat = (): void => {
+      if (stopped || compromiseError) return;
+      heartbeatTimer = setTimeout(() => {
+        heartbeatTimer = undefined;
+        void guardOwnership().then(scheduleHeartbeat, () => undefined);
+      }, this.lockUpdateMs);
+      heartbeatTimer.unref?.();
+    };
+    scheduleHeartbeat();
+
+    const closeOwnedHandle = async (): Promise<void> => {
+      if (closed) return;
+      closed = true;
+      await ownedHandle.close();
+    };
+
+    const releaseOwnedLock = async (): Promise<void> => {
+      stopped = true;
+      if (heartbeatTimer) clearTimeout(heartbeatTimer);
+      await guardTail;
+
+      if (compromiseError) {
+        try {
+          await closeOwnedHandle();
+        } catch {
+          // Preserve the compromise error and never touch the replacement pathname.
+        }
+        throw compromiseError;
+      }
+
+      try {
+        await guardOwnership();
+      } catch (error) {
+        try {
+          await closeOwnedHandle();
+        } catch {
+          // Preserve the ownership error and never touch a possibly replaced pathname.
+        }
+        throw error;
+      }
+      await closeOwnedHandle();
+      await rmdir(this.lockPath);
+    };
+
+    return {
+      guardOwnership,
+      getCompromiseError: () => compromiseError,
+      release: () => this.releaseLock(releaseOwnedLock),
     };
   }
 
   private async writeManifest(
     manifest: SharedSettingsManifest,
-    assertLockActive: () => void,
+    guardOwnership: () => Promise<void>,
   ): Promise<void> {
     const stagingPath = path.join(
       this.directory,
@@ -638,9 +831,16 @@ export class SharedSettingsStore {
         }
       }
 
-      await this.beforePublishStagedFile();
-      assertLockActive();
-      await this.publishStagedFile(stagingPath, this.manifestPath);
+      let passedPublisherBarrier = false;
+      await this.publishStagedFile(stagingPath, this.manifestPath, async () => {
+        if (!passedPublisherBarrier) {
+          passedPublisherBarrier = true;
+          // Deterministic barrier immediately before the first atomic rename attempt.
+          await this.beforePublishStagedFile();
+        }
+        // Renew and prove ownership after blocked work and before every rename attempt.
+        await guardOwnership();
+      });
     } catch (error) {
       operationFailed = true;
       throw error;
