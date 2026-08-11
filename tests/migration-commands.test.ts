@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { TFile } from 'obsidian';
+import { __resetObsidianMock } from './mocks/obsidian';
 import {
   MOVE_COPY_COMMAND_ID,
   RELINK_BACKLINKS_COMMAND_ID,
@@ -20,6 +21,8 @@ import {
 } from '../src/migration/migration-view-models';
 import type { IndexedFile, VaultConfig } from '../src/types';
 import { formatCrossVaultWikilink } from '../src/migration/cross-vault-link';
+import { FileOperationModal } from '../src/modals/file-operation-modal';
+import { handleMigrationReviewConfirmation } from '../src/modals/migration-review-modal';
 
 function testFile(filePath: string): TFile {
   const file = new TFile();
@@ -48,6 +51,34 @@ class ControllerIo implements MigrationIo {
   async trashSourceFile(path: string) { this.source.delete(path); }
   async restoreSourceFile(path: string, content: string) { this.source.set(path, content); }
 }
+
+type MockButton = {
+  buttonText: string;
+  triggerClick(): Promise<unknown>;
+};
+
+type MockToggle = {
+  triggerChange(value: boolean): Promise<unknown>;
+};
+
+function findButton(modal: { contentEl: unknown }, label: string): MockButton {
+  const settings = (modal.contentEl as { settings: Array<{ buttons: MockButton[] }> }).settings;
+  const button = settings.flatMap((setting) => setting.buttons)
+    .find((candidate) => candidate.buttonText === label);
+  if (!button) throw new Error(`Missing button: ${label}`);
+  return button;
+}
+
+function findToggle(modal: { contentEl: unknown }, name: string): MockToggle {
+  const settings = (modal.contentEl as { settings: Array<{ name: string; toggles: MockToggle[] }> }).settings;
+  const toggle = settings.find((setting) => setting.name === name)?.toggles[0];
+  if (!toggle) throw new Error(`Missing toggle: ${name}`);
+  return toggle;
+}
+
+beforeEach(() => {
+  __resetObsidianMock();
+});
 
 describe('cross-vault clipboard links', () => {
   it('formats the selected vault and current note as a natural cross-vault wikilink', () => {
@@ -154,6 +185,117 @@ describe('migration picker and review view models', () => {
         after: '[[medicine::ZeroTier]]',
       }],
     });
+  });
+});
+
+describe('FileOperationModal overwrite toggle', () => {
+  it('passes overwriteDestination as false by default and true after the toggle changes', async () => {
+    const activeFile = testFile('Projects/Zerotier.md');
+    const vaults: VaultConfig[] = [
+      { id: 'ideas', name: 'ideas', path: 'C:/vaults/ideas', enabled: true },
+      { id: 'math', name: 'mathematics', path: 'C:/vaults/mathematics', enabled: true },
+    ];
+    const planCalls: unknown[][] = [];
+    const plan = {
+      mode: 'copy',
+      sourcePath: activeFile.path,
+      sourceOriginalContent: 'source',
+      destinationAbsolutePath: 'C:/vaults/mathematics/Projects/Zerotier.md',
+      destinationRelativePath: 'Projects/Zerotier.md',
+      destinationContent: 'source',
+      destinationPolicy: 'create-only',
+      destinationOriginalContent: null,
+      backlinkEdits: [],
+      outgoingLinksRewritten: 0,
+      backlinksRewritten: 0,
+      skipped: [],
+    } as never;
+    const controller = {
+      planMoveCopy: async (...args: unknown[]) => {
+        planCalls.push(args);
+        return plan;
+      },
+      execute: async () => ({
+        mode: 'copy' as const,
+        outgoingLinksRewritten: 0,
+        backlinksRewritten: 0,
+        indexUpdated: true,
+      }),
+    };
+    const registry = {
+      getCurrentVaultId: () => 'ideas',
+      getVaults: () => vaults,
+      getVaultById: (id: string) => vaults.find((vault) => vault.id === id),
+    };
+    const indexer = { getIndexedFiles: () => [] };
+    const app = {
+      workspace: { getActiveFile: () => activeFile },
+      metadataCache: { getFileCache: () => ({}) },
+    };
+    const modal = new FileOperationModal(app as never, registry as never, indexer as never, controller as never);
+
+    modal.onOpen();
+    await findButton(modal, 'Review changes').triggerClick();
+    await findToggle(modal, 'Overwrite existing destination').triggerChange(true);
+    await findButton(modal, 'Review changes').triggerClick();
+
+    modal.onOpen();
+    await findButton(modal, 'Review changes').triggerClick();
+
+    expect(planCalls.map((args) => args[5])).toEqual([false, true, false]);
+  });
+});
+
+describe('migration review confirmation routing', () => {
+  it('opens a second confirmation only for reviewed overwrites', async () => {
+    const calls: string[] = [];
+    let deferredConfirm: (() => Promise<void>) | null = null;
+
+    await handleMigrationReviewConfirmation(
+      {
+        destinationAbsolutePath: 'C:/vaults/mathematics/Notes/Zerotier.md',
+        destinationPolicy: 'overwrite-reviewed',
+      } as never,
+      async () => {
+        calls.push('execute');
+      },
+      (destinationPath, onConfirm) => {
+        calls.push(`prompt:${destinationPath}`);
+        deferredConfirm = onConfirm;
+      },
+    );
+
+    expect(calls).toEqual(['prompt:C:/vaults/mathematics/Notes/Zerotier.md']);
+    expect(deferredConfirm).not.toBeNull();
+
+    if (!deferredConfirm) {
+      throw new Error('Expected overwrite confirmation callback');
+    }
+    const confirmOverwrite = deferredConfirm as () => Promise<void>;
+    await confirmOverwrite();
+    expect(calls).toEqual([
+      'prompt:C:/vaults/mathematics/Notes/Zerotier.md',
+      'execute',
+    ]);
+
+    calls.length = 0;
+    deferredConfirm = null;
+
+    await handleMigrationReviewConfirmation(
+      {
+        destinationAbsolutePath: 'C:/vaults/mathematics/Notes/Zerotier.md',
+        destinationPolicy: 'create-only',
+      } as never,
+      async () => {
+        calls.push('execute');
+      },
+      () => {
+        calls.push('prompt');
+      },
+    );
+
+    expect(calls).toEqual(['execute']);
+    expect(deferredConfirm).toBeNull();
   });
 });
 

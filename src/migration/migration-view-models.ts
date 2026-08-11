@@ -3,6 +3,8 @@ import type { IndexedFile } from '../types';
 
 export interface MigrationReviewModel {
   destination: string | null;
+  overwritesDestination: boolean;
+  destinationOriginalBytes: number | null;
   outgoingLinks: number;
   backlinks: number;
   affectedFiles: number;
@@ -54,6 +56,10 @@ export function makeMigrationReviewModel(plan: MigrationPlan): MigrationReviewMo
   }
   return {
     destination: plan.destinationRelativePath,
+    overwritesDestination: plan.destinationPolicy === 'overwrite-reviewed',
+    destinationOriginalBytes: plan.destinationOriginalContent == null
+      ? null
+      : Buffer.byteLength(plan.destinationOriginalContent, 'utf8'),
     outgoingLinks: plan.outgoingLinksRewritten,
     backlinks: plan.backlinksRewritten,
     affectedFiles: plan.backlinkEdits.length,

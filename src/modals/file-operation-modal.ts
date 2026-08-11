@@ -1,5 +1,4 @@
 import { App, Modal, Notice, Setting } from 'obsidian';
-import * as fs from 'fs';
 import type { Indexer } from '../indexer/indexer';
 import { listDestinationFolders } from '../migration/destination-paths';
 import type { MigrationController } from '../migration/migration-controller';
@@ -12,6 +11,7 @@ export class FileOperationModal extends Modal {
   private targetFolder = '/';
   private operation: 'move' | 'copy' = 'move';
   private preserveLinks = true;
+  private overwriteDestination = false;
   private folderDescription: HTMLElement | null = null;
 
   constructor(
@@ -24,6 +24,7 @@ export class FileOperationModal extends Modal {
   }
 
   onOpen(): void {
+    this.overwriteDestination = false;
     const activeFile = this.app.workspace.getActiveFile();
     this.contentEl.empty();
     if (!activeFile || activeFile.extension.toLowerCase() !== 'md') {
@@ -101,6 +102,13 @@ export class FileOperationModal extends Modal {
         this.preserveLinks = value;
       }));
 
+    new Setting(this.contentEl)
+      .setName('Overwrite existing destination')
+      .setDesc('Replace an existing destination note after a second confirmation.')
+      .addToggle((toggle) => toggle.setValue(false).onChange((value) => {
+        this.overwriteDestination = value;
+      }));
+
     new Setting(this.contentEl).addButton((button) => button
       .setButtonText('Review changes')
       .setCta()
@@ -112,13 +120,8 @@ export class FileOperationModal extends Modal {
             this.targetFolder,
             this.operation,
             this.preserveLinks,
+            this.overwriteDestination,
           );
-          if (plan.destinationAbsolutePath && fs.existsSync(plan.destinationAbsolutePath)) {
-            new Notice(
-              'Destination already exists. Use “Relink Backlinks to Existing Cross-Vault Note” when this note already exists there.',
-            );
-            return;
-          }
           new MigrationReviewModal(this.app, plan, async () => {
             try {
               const result = await this.controller.execute(plan);

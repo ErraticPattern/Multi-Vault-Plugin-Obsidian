@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { collectMigrationSnapshot } from '../src/migration/obsidian-snapshot';
+import { makeMigrationReviewModel } from '../src/migration/migration-view-models';
 import {
   planMoveOrCopy,
   planStandaloneRelink,
@@ -133,6 +134,28 @@ describe('planMoveOrCopy move', () => {
     });
 
     expect(plan.backlinkEdits[0].updatedContent).toBe('[[mathematics::Notes/Zerotier]]');
+  });
+});
+
+describe('makeMigrationReviewModel', () => {
+  it('reports reviewed overwrite warnings from the plan metadata', () => {
+    expect(makeMigrationReviewModel({
+      mode: 'copy',
+      sourcePath: 'Source.md',
+      sourceOriginalContent: 'source',
+      destinationAbsolutePath: 'C:/math/Notes/Source.md',
+      destinationRelativePath: 'Notes/Source.md',
+      destinationContent: 'source',
+      destinationPolicy: 'overwrite-reviewed',
+      destinationOriginalContent: 'existing',
+      backlinkEdits: [],
+      outgoingLinksRewritten: 0,
+      backlinksRewritten: 0,
+      skipped: [],
+    } as never)).toMatchObject({
+      overwritesDestination: true,
+      destinationOriginalBytes: 8,
+    });
   });
 });
 

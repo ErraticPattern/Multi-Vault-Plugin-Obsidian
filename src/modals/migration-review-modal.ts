@@ -1,6 +1,25 @@
 import { App, Modal, Setting } from 'obsidian';
 import type { MigrationPlan } from '../migration/migration-types';
 import { makeMigrationReviewModel } from '../migration/migration-view-models';
+import { OverwriteConfirmModal } from './overwrite-confirm-modal';
+
+export type MigrationReviewConfirmationResult = 'confirmed' | 'awaiting-overwrite-confirm';
+
+export async function handleMigrationReviewConfirmation(
+  plan: MigrationPlan,
+  onConfirm: () => Promise<void>,
+  openOverwriteConfirm: (destinationPath: string, onConfirm: () => Promise<void>) => void,
+): Promise<MigrationReviewConfirmationResult> {
+  if (plan.destinationPolicy === 'overwrite-reviewed') {
+    if (!plan.destinationAbsolutePath) {
+      throw new Error('Overwrite review is missing the destination path');
+    }
+    openOverwriteConfirm(plan.destinationAbsolutePath, onConfirm);
+    return 'awaiting-overwrite-confirm';
+  }
+  await onConfirm();
+  return 'confirmed';
+}
 
 export class MigrationReviewModal extends Modal {
   constructor(
@@ -19,6 +38,16 @@ export class MigrationReviewModal extends Modal {
       this.contentEl.createEl('p', { text: `Destination: ${model.destination}` });
     } else {
       this.contentEl.createEl('p', { text: 'Standalone backlink relink; the current note will remain in place.' });
+    }
+
+    if (model.overwritesDestination && this.plan.destinationAbsolutePath) {
+      const originalBytes = model.destinationOriginalBytes === 1
+        ? '1 byte'
+        : `${model.destinationOriginalBytes ?? 0} bytes`;
+      this.contentEl.createEl('p', {
+        text: `Warning: this will replace the existing destination note at ${this.plan.destinationAbsolutePath} (${originalBytes}). Confirming here opens one more overwrite confirmation before execution.`,
+        cls: 'mod-warning',
+      });
     }
 
     const summary = this.contentEl.createEl('ul', { cls: 'mvn-migration-summary' });
@@ -47,8 +76,19 @@ export class MigrationReviewModal extends Modal {
         .onClick(async () => {
           button.setDisabled(true);
           try {
-            await this.onConfirm();
-            this.close();
+            const result = await handleMigrationReviewConfirmation(
+              this.plan,
+              async () => {
+                await this.onConfirm();
+                this.close();
+              },
+              (destinationPath, onConfirm) => {
+                new OverwriteConfirmModal(this.app, destinationPath, onConfirm).open();
+              },
+            );
+            if (result === 'awaiting-overwrite-confirm') {
+              button.setDisabled(false);
+            }
           } catch {
             button.setDisabled(false);
           }
