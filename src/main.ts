@@ -61,8 +61,12 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
       }
     }
 
+    const hasAuthoritativeSharedSettings = this.sharedSettingsService?.hasAuthoritativeManifest() === true;
+
     // Initialize core modules
-    this.vaultRegistry = new VaultRegistry(this.app, this.settings);
+    this.vaultRegistry = new VaultRegistry(this.app, this.settings, {
+      autoDetect: !hasAuthoritativeSharedSettings,
+    });
     
     // Save settings right away in case auto-detect added vaults
     this.settings.vaults = this.vaultRegistry.getVaults();

@@ -42,6 +42,14 @@ export class App {
   vault: unknown;
 }
 
+export class FileSystemAdapter {
+  constructor(private readonly basePath = '') {}
+
+  getBasePath(): string {
+    return this.basePath;
+  }
+}
+
 export class TFile {
   path: string;
   name: string;

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { App, FileSystemAdapter } from 'obsidian';
 
 import {
   SharedSettingsService,
@@ -14,6 +15,7 @@ import {
 import { normalizePathKey } from '../src/shared-settings/path-identity';
 import type { SharedSettingsProjection } from '../src/shared-settings/shared-settings-types';
 import type { MultiVaultSettings } from '../src/types';
+import { VaultRegistry } from '../src/vault-registry';
 
 const tempDirs: string[] = [];
 
@@ -65,6 +67,21 @@ function projection(excludedVaultIds: string[] = []): SharedSettingsProjection {
   };
 }
 
+function settingsForVaults(vaults: MultiVaultSettings['vaults']): MultiVaultSettings {
+  return {
+    ...localSettings(),
+    vaults: vaults.map((vault) => ({ ...vault })),
+    sharedSettings: {},
+  };
+}
+
+async function createVaultDirectory(prefix: string): Promise<string> {
+  const directory = await mkdtemp(path.join(os.tmpdir(), prefix));
+  tempDirs.push(directory);
+  await mkdir(path.join(directory, '.obsidian'), { recursive: true });
+  return directory;
+}
+
 async function fixture(excludedVaultIds: string[] = []) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mvn-shared-service-'));
   tempDirs.push(root);
@@ -100,6 +117,7 @@ function runtime(overrides: Partial<SharedSettingsRuntime> = {}): SharedSettings
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await Promise.all(tempDirs.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
@@ -193,6 +211,105 @@ describe('SharedSettingsService lifecycle', () => {
     expect(invalid.getStatus()).toMatchObject({ revision: null, lastAppliedRevision: null });
     expect(invalid.getStatus().error).toContain('malformed JSON');
     expect(root).toBe(store.applicationDataRoot);
+  });
+
+  it('keeps an authoritative startup projection exact by skipping vault auto-detection', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'mvn-shared-service-startup-'));
+    tempDirs.push(root);
+    const currentVault = await createVaultDirectory('mvn-current-vault-');
+    const sharedVault = await createVaultDirectory('mvn-shared-vault-');
+    const strayVault = await createVaultDirectory('mvn-stray-vault-');
+    const appDataRoot = await mkdtemp(path.join(os.tmpdir(), 'mvn-obsidian-appdata-'));
+    tempDirs.push(appDataRoot);
+    await mkdir(path.join(appDataRoot, 'Obsidian'), { recursive: true });
+    await writeFile(
+      path.join(appDataRoot, 'Obsidian', 'obsidian.json'),
+      JSON.stringify({
+        vaults: {
+          current: { path: currentVault },
+          shared: { path: sharedVault },
+          stray: { path: strayVault },
+        },
+      }),
+      'utf8',
+    );
+    vi.spyOn(os, 'platform').mockReturnValue('win32');
+    vi.stubEnv('APPDATA', appDataRoot);
+
+    const settings = settingsForVaults([
+      { id: 'current', name: 'Current', path: currentVault, enabled: true, color: '#111111' },
+      { id: 'local-only', name: 'Local only', path: strayVault, enabled: true },
+    ]);
+    const store = new SharedSettingsStore(root);
+    await store.initialize({
+      enabled: true,
+      excludedVaultIds: [],
+      vaults: [
+        { id: 'current', name: 'Current', path: currentVault, pathKey: normalizePathKey(currentVault, process.platform), enabled: true, color: '#111111' },
+        { id: 'shared', name: 'Shared', path: sharedVault, pathKey: normalizePathKey(sharedVault, process.platform), enabled: true, color: '#222222' },
+      ],
+      crossVaultLinks: {
+        showVaultBadge: true,
+        useVaultColorForLinks: false,
+      },
+      virtualLinks: settings.virtualLinks!,
+    }, 'seed-writer');
+
+    const peer = new SharedSettingsService({
+      store,
+      settings,
+      currentVaultPath: currentVault,
+      writerInstanceId: 'current-writer',
+      polling: false,
+    });
+
+    await expect(peer.initialize()).resolves.toMatchObject({ kind: 'applied', revision: 0 });
+    expect(peer.hasAuthoritativeManifest()).toBe(true);
+    expect(settings.vaults.map((vault) => vault.id).sort()).toEqual(['current', 'shared']);
+
+    const adapter = Object.assign(new FileSystemAdapter(), {
+      getBasePath: () => currentVault,
+    });
+    const app = {
+      vault: {
+        configDir: '.obsidian',
+        adapter,
+      },
+    } as unknown as App;
+
+    expect(new VaultRegistry(app, settings).getVaults().map((vault) => vault.id)).toContain('stray');
+    expect(
+      new VaultRegistry(app, settings, { autoDetect: !peer.hasAuthoritativeManifest() })
+        .getVaults()
+        .map((vault) => vault.id)
+        .sort(),
+    ).toEqual(['current', 'shared']);
+  });
+
+  it('reapplies the latest journal state when forced even at the same revision', async () => {
+    const { root, store } = await fixture();
+    const settings = localSettings();
+    const peer = service(new SharedSettingsStore(root), settings, 'medicine');
+
+    await expect(peer.initialize()).resolves.toMatchObject({ kind: 'applied', revision: 0 });
+    settings.vaults.find((vault) => vault.id === 'medicine')!.color = '#222222';
+
+    const callbacks = runtime();
+    peer.attachRuntime(callbacks);
+
+    await expect(peer.applyLatest()).resolves.toEqual({ kind: 'unchanged', revision: 0 });
+    expect(settings.vaults.find((vault) => vault.id === 'medicine')?.color).toBe('#222222');
+
+    await expect(peer.applyLatest(true)).resolves.toMatchObject({
+      kind: 'applied',
+      revision: 0,
+      appearanceChanged: true,
+      catalogChanged: false,
+    });
+    expect(settings.vaults.find((vault) => vault.id === 'medicine')?.color).toBe('#111111');
+    expect(callbacks.saveLocalMirror).toHaveBeenCalledTimes(1);
+    expect(callbacks.onAppearanceChanged).toHaveBeenCalledTimes(1);
+    expect(callbacks.onCatalogChanged).not.toHaveBeenCalled();
   });
 
   it('coalesces catalog revisions into one incremental refresh request', async () => {

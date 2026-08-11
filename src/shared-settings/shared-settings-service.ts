@@ -226,7 +226,7 @@ export class SharedSettingsService {
 
   initializeAndApplyToSettings(): Promise<SyncApplyResult> {
     return this.enqueue(async () => {
-      const result = await this.readAndApplyLatest();
+      const result = await this.readAndApplyLatest(true);
       await this.captureJournalState();
       return result;
     });
@@ -244,8 +244,12 @@ export class SharedSettingsService {
     this.registerInterval?.(timer);
   }
 
-  applyLatest(_force = false): Promise<SyncApplyResult> {
-    return this.enqueue(() => this.readAndApplyLatest());
+  applyLatest(force = false): Promise<SyncApplyResult> {
+    return this.enqueue(async () => {
+      const result = await this.readAndApplyLatest(force);
+      await this.captureJournalState();
+      return result;
+    });
   }
 
   publish(patch: SharedSettingsPatch): Promise<SyncApplyResult> {
@@ -304,6 +308,11 @@ export class SharedSettingsService {
     };
   }
 
+  hasAuthoritativeManifest(): boolean {
+    const manifest = this.lastValidManifest;
+    return manifest !== null && manifest.enabled && !this.isCurrentVaultExcluded(manifest);
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -322,7 +331,7 @@ export class SharedSettingsService {
     return result;
   }
 
-  private async readAndApplyLatest(): Promise<SyncApplyResult> {
+  private async readAndApplyLatest(force = false): Promise<SyncApplyResult> {
     if (this.disposed) return this.disposedResult();
 
     try {
@@ -333,16 +342,16 @@ export class SharedSettingsService {
       }
       this.lastValidManifest = manifest;
       this.lastError = null;
-      return await this.applyManifest(manifest);
+      return await this.applyManifest(manifest, force);
     } catch (error) {
       return this.recordError(error);
     }
   }
 
-  private async applyManifest(manifest: SharedSettingsManifest): Promise<SyncApplyResult> {
+  private async applyManifest(manifest: SharedSettingsManifest, force = false): Promise<SyncApplyResult> {
     if (!manifest.enabled) return { kind: 'disabled', revision: manifest.revision };
     if (this.isCurrentVaultExcluded(manifest)) return { kind: 'excluded', revision: manifest.revision };
-    if (this.lastAppliedRevision !== null && manifest.revision <= this.lastAppliedRevision) {
+    if (!force && this.lastAppliedRevision !== null && manifest.revision <= this.lastAppliedRevision) {
       return { kind: 'unchanged', revision: manifest.revision };
     }
 

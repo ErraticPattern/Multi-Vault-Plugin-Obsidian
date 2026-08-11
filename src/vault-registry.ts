@@ -4,21 +4,29 @@ import * as path from 'path';
 import * as os from 'os';
 import { VaultConfig, MultiVaultSettings } from './types';
 
+export interface VaultRegistryOptions {
+  autoDetect?: boolean;
+}
+
 export class VaultRegistry {
   private vaults: Map<string, VaultConfig> = new Map();
   private app: App;
 
-  constructor(app: App, settings: MultiVaultSettings) {
+  constructor(app: App, settings: MultiVaultSettings, options: VaultRegistryOptions = {}) {
     this.app = app;
-    
+
     // Load from settings
     if (settings.vaults) {
       settings.vaults.forEach(v => this.vaults.set(v.id, v));
     }
 
+    if (options.autoDetect === false) {
+      return;
+    }
+
     // Auto-detect current vault if not in list
     this.detectCurrentVault();
-    
+
     // Auto-detect other vaults from Obsidian global config
     this.autoDetectGlobalVaults();
   }
