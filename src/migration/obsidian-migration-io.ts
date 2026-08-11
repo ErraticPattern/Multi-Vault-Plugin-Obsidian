@@ -204,8 +204,8 @@ export class ObsidianMigrationIo implements MigrationIo {
   ): Promise<DestinationOwnershipToken> {
     await this.assertReviewedDestination(absolutePath, expectedOriginal);
     await this.raceHooks.beforeOverwritePublication?.();
-    await this.assertReviewedDestination(absolutePath, expectedOriginal);
     await this.assertStageReady(stagePath, stageHandle, stageIdentity, content);
+    await this.assertReviewedDestination(absolutePath, expectedOriginal);
 
     // Node exposes no portable rename compare-and-swap. A non-cooperating process can
     // still replace this directory entry after the final identity check and before

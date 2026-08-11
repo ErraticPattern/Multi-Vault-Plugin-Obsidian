@@ -257,6 +257,35 @@ describe('ObsidianMigrationIo', () => {
     expect(await readdir(root)).toEqual(['Existing.md']);
   });
 
+  it('rejects a reviewed overwrite when the destination changes during staged validation and leaves no stage artifact', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
+    roots.push(root);
+    const destination = path.join(root, 'Existing.md');
+    const concurrentContent = 'changed during staged validation';
+    let raceInjected = false;
+    const io = new ObsidianMigrationIo({ vault: {}, fileManager: {} } as never);
+    await writeFile(destination, 'existing', 'utf8');
+
+    vi.mocked(lstatViaProdSpecifier).mockImplementation(async (filePath, options) => {
+      if (!raceInjected && typeof filePath === 'string' && filePath.startsWith(`${destination}.mvp-stage-`)) {
+        raceInjected = true;
+        await writeFile(destination, concurrentContent, 'utf8');
+      }
+      return actualFs.lstat(filePath, options as never);
+    });
+
+    try {
+      await expect(io.writeDestination(destination, 'updated', 'existing'))
+        .rejects.toBeInstanceOf(StaleMigrationPlanError);
+    } finally {
+      vi.mocked(lstatViaProdSpecifier).mockImplementation(actualFs.lstat);
+    }
+
+    expect(raceInjected).toBe(true);
+    expect(await io.readDestination(destination)).toBe(concurrentContent);
+    expect(await readdir(root)).toEqual(['Existing.md']);
+  });
+
   it('refuses create cleanup when the path is replaced between validation and deletion', async () => {
     const root = mkdtempSync(path.join(tmpdir(), 'mvn-io-'));
     roots.push(root);
