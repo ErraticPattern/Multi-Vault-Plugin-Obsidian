@@ -248,9 +248,9 @@ describe('cross-vault migration workflow', () => {
 
     await executeMigrationPlan(plan, new FixtureIo(ideas));
 
-    expect(await readFile(destination, 'utf8')).toBe('Uses [[ideas::EEG#Acquisition|EEG setup]].');
+    expect(await readFile(destination, 'utf8')).toBe('Uses [[EEG@ideas#Acquisition|EEG setup]].');
     expect(await readFile(path.join(ideas, 'Notes/Network index.md'), 'utf8'))
-      .toBe('See [[mathematics::Zerotier|ZeroTier]].');
+      .toBe('See [[Zerotier@mathematics|ZeroTier]].');
     await expect(readFile(path.join(ideas, 'Projects/Zerotier.md'))).rejects.toThrow();
     expect(await readFile(path.join(ideas, 'Notes/EEG.md'), 'utf8')).toBe('EEG content.');
   });
@@ -270,7 +270,7 @@ describe('cross-vault migration workflow', () => {
 
     expect(await readFile(path.join(ideas, 'Projects/Zerotier.md'), 'utf8')).toBe(source);
     expect(await readFile(path.join(ideas, 'Notes/Network index.md'), 'utf8')).toBe(backlink);
-    expect(await readFile(destination, 'utf8')).toContain('[[ideas::EEG#Acquisition|EEG setup]]');
+    expect(await readFile(destination, 'utf8')).toContain('[[EEG@ideas#Acquisition|EEG setup]]');
   });
 
   it('path-qualifies a moved root README when the target vault has another README', async () => {
@@ -301,7 +301,7 @@ describe('cross-vault migration workflow', () => {
     await executeMigrationPlan(plan, new FixtureIo(ideas));
 
     expect(await readFile(path.join(ideas, 'Index.md'), 'utf8'))
-      .toBe('See [[mathematics::/README]].');
+      .toBe('See [[/README@mathematics]].');
     expect(await readFile(destination, 'utf8')).toBe(sourceContent);
     expect(await readFile(path.join(mathematics, 'Lab/README.md'), 'utf8')).toBe('Lab README.');
   });
@@ -321,7 +321,7 @@ describe('cross-vault migration workflow', () => {
     expect(await readFile(path.join(ideas, 'Projects/Zerotier.md'), 'utf8')).toBe(source);
     expect(await readFile(existing, 'utf8')).toBe('Existing destination.');
     expect(await readFile(path.join(ideas, 'Notes/Network index.md'), 'utf8'))
-      .toBe('See [[mathematics::Zerotier|ZeroTier]].');
+      .toBe('See [[Zerotier@mathematics|ZeroTier]].');
   });
 
   it('overwrites a reviewed destination during move and keeps backlinks and cleanup exact', async () => {
@@ -340,8 +340,8 @@ describe('cross-vault migration workflow', () => {
 
     await executeMigrationPlan(plan, io);
 
-    expect(await readFile(destination, 'utf8')).toBe('Uses [[ideas::EEG#Acquisition|EEG setup]].');
-    expect(await readFile(path.join(ideas, 'Notes/Index.md'), 'utf8')).toBe('See [[mathematics::Same|Same note]].');
+    expect(await readFile(destination, 'utf8')).toBe('Uses [[EEG@ideas#Acquisition|EEG setup]].');
+    expect(await readFile(path.join(ideas, 'Notes/Index.md'), 'utf8')).toBe('See [[Same@mathematics|Same note]].');
     await expect(readFile(path.join(ideas, 'Notes/Same.md'))).rejects.toThrow();
     await assertNoTemporaryArtifacts(ideas, mathematics);
   });
@@ -364,7 +364,7 @@ describe('cross-vault migration workflow', () => {
 
     expect(await readFile(path.join(ideas, 'Notes/Same.md'), 'utf8')).toBe(sourceContent);
     expect(await readFile(path.join(ideas, 'Notes/Index.md'), 'utf8')).toBe(backlinkContent);
-    expect(await readFile(destination, 'utf8')).toBe('Uses [[ideas::EEG#Acquisition|EEG setup]].');
+    expect(await readFile(destination, 'utf8')).toBe('Uses [[EEG@ideas#Acquisition|EEG setup]].');
     await assertNoTemporaryArtifacts(ideas, mathematics);
   });
 

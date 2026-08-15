@@ -8,6 +8,12 @@ import {
   splitLinkSubpath,
   type TextEdit,
 } from './link-rewriter';
+import {
+  DEFAULT_CROSS_VAULT_LINK_FORMAT,
+  formatCrossVaultTarget,
+  isCrossVaultTarget,
+  type CrossVaultLinkFormat,
+} from '../cross-vault-syntax';
 import type {
   LinkSnapshot,
   MigrationPlan,
@@ -37,11 +43,17 @@ function skipped(reference: LinkSnapshot, reason: SkippedLinkReason): SkippedLin
   };
 }
 
-function classifyIneligible(reference: LinkSnapshot, activeSourcePath: string): SkippedLinkReason | null {
+function classifyIneligible(
+  reference: LinkSnapshot,
+  activeSourcePath: string,
+  isKnownVault: (vaultName: string) => boolean,
+): SkippedLinkReason | null {
   if (reference.kind === 'embed') return 'embed';
   if (reference.kind === 'markdown') return 'markdown-link';
   const { linkpath } = splitLinkSubpath(reference.linkTarget);
-  if (linkpath.includes('::')) return 'already-cross-vault';
+  // Both spellings count: rewriting a link that already leaves this vault would
+  // produce nonsense like [[Note@medicine@medicine]].
+  if (isCrossVaultTarget(linkpath, isKnownVault)) return 'already-cross-vault';
   if (!reference.resolvedPath) return 'unresolved';
   if (reference.resolvedPath === activeSourcePath) return 'self-link';
   if (!reference.resolvedPath.toLowerCase().endsWith('.md')) return 'attachment';
@@ -53,10 +65,14 @@ function replacementFor(
   vaultName: string,
   resolvedPath: string,
   indexedFiles: IndexedNotePath[],
+  format: CrossVaultLinkFormat,
 ): string | null {
   const notePath = chooseCrossVaultNotePath(resolvedPath, indexedFiles);
   const { subpath } = splitLinkSubpath(reference.linkTarget);
-  return rewriteWikilinkOriginal(reference.original, `${vaultName}::${notePath}${subpath}`);
+  return rewriteWikilinkOriginal(
+    reference.original,
+    `${formatCrossVaultTarget(vaultName, notePath, format)}${subpath}`,
+  );
 }
 
 function makeEdit(reference: LinkSnapshot, replacement: string): TextEdit {
@@ -72,12 +88,14 @@ function planOutgoing(
   sourceNote: NoteSnapshot,
   sourceVaultName: string,
   sourceIndexedFiles: IndexedNotePath[],
+  format: CrossVaultLinkFormat,
+  isKnownVault: (vaultName: string) => boolean,
 ): { content: string; count: number; skipped: SkippedLink[] } {
   const edits: TextEdit[] = [];
   const skippedLinks: SkippedLink[] = [];
 
   for (const reference of sourceNote.links) {
-    const reason = classifyIneligible(reference, sourceNote.path);
+    const reason = classifyIneligible(reference, sourceNote.path, isKnownVault);
     if (reason) {
       skippedLinks.push(skipped(reference, reason));
       continue;
@@ -87,6 +105,7 @@ function planOutgoing(
       sourceVaultName,
       reference.resolvedPath!,
       sourceIndexedFiles,
+      format,
     );
     if (!replacement) {
       skippedLinks.push(skipped(reference, 'markdown-link'));
@@ -108,6 +127,7 @@ function planBacklinks(
   targetVaultName: string,
   targetRelativePath: string,
   targetIndexedFiles: IndexedNotePath[],
+  format: CrossVaultLinkFormat,
 ): { edits: PlannedFileEdit[]; count: number; skipped: SkippedLink[] } {
   const targetNotePath = chooseCrossVaultNotePath(targetRelativePath, targetIndexedFiles);
   const planned: PlannedFileEdit[] = [];
@@ -131,7 +151,7 @@ function planBacklinks(
       const { subpath } = splitLinkSubpath(reference.linkTarget);
       const replacement = rewriteWikilinkOriginal(
         reference.original,
-        `${targetVaultName}::${targetNotePath}${subpath}`,
+        `${formatCrossVaultTarget(targetVaultName, targetNotePath, format)}${subpath}`,
       );
       if (!replacement) {
         skippedLinks.push(skipped(reference, 'markdown-link'));
@@ -154,6 +174,16 @@ function planBacklinks(
   return { edits: planned, count, skipped: skippedLinks };
 }
 
+/**
+ * Only a configured vault name turns Note@name into a cross-vault link. The
+ * vaults involved in this migration are always included, so a plan still
+ * recognises its own links when no registry was handed over.
+ */
+function knownVaultPredicate(configured: string[] | undefined, involved: string[]): (vaultName: string) => boolean {
+  const names = new Set([...(configured ?? []), ...involved].map((name) => name.toLowerCase()));
+  return (vaultName: string) => names.has(vaultName.toLowerCase());
+}
+
 function findSource(notes: NoteSnapshot[], sourcePath: string): NoteSnapshot {
   const source = notes.find((note) => note.path === sourcePath);
   if (!source) throw new Error(`Source note not found in snapshot: ${sourcePath}`);
@@ -162,6 +192,8 @@ function findSource(notes: NoteSnapshot[], sourcePath: string): NoteSnapshot {
 
 export function planMoveOrCopy(input: MoveCopyPlanningInput): MigrationPlan {
   const source = findSource(input.notes, input.sourcePath);
+  const format = input.linkFormat ?? DEFAULT_CROSS_VAULT_LINK_FORMAT;
+  const isKnownVault = knownVaultPredicate(input.knownVaultNames, [input.sourceVaultName, input.targetVaultName]);
   if (!input.preserveLinks) {
     return {
       mode: input.mode,
@@ -177,7 +209,7 @@ export function planMoveOrCopy(input: MoveCopyPlanningInput): MigrationPlan {
     };
   }
 
-  const outgoing = planOutgoing(source, input.sourceVaultName, input.sourceIndexedFiles);
+  const outgoing = planOutgoing(source, input.sourceVaultName, input.sourceIndexedFiles, format, isKnownVault);
   const backlinks = input.mode === 'move'
     ? planBacklinks(
         input.notes,
@@ -185,6 +217,7 @@ export function planMoveOrCopy(input: MoveCopyPlanningInput): MigrationPlan {
         input.targetVaultName,
         input.destinationRelativePath,
         input.targetIndexedFiles,
+        format,
       )
     : { edits: [], count: 0, skipped: [] };
 
@@ -210,6 +243,7 @@ export function planStandaloneRelink(input: RelinkPlanningInput): MigrationPlan 
     input.targetVaultName,
     input.targetRelativePath,
     input.targetIndexedFiles,
+    input.linkFormat ?? DEFAULT_CROSS_VAULT_LINK_FORMAT,
   );
   return {
     mode: 'relink',

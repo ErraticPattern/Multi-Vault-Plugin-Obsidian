@@ -34,7 +34,11 @@ Natively, Obsidian does not allow you to open a note from outside the active vau
 - Includes actions to quickly "Open in Source Vault" or "Copy Cross-Vault Link."
 
 ### 3. Natural Cross-Vault Links
-Write `[[VaultName::NoteTitle]]` in any note. The plugin parses these references and allows you to click them to instantly open the cross-vault note in the read-only preview. If the name is ambiguous, clicking opens a searchable chooser showing each full relative path. Generated links use `[[vault::Folder/README]]` when a basename is duplicated; a duplicated note at the vault root uses `[[vault::/README]]`. **Copy Cross-Vault Link for Current File** opens a vault chooser and copies this natural wikilink format instead of a protocol URL.
+Write `[[NoteTitle@VaultName]]` (or the original `[[VaultName::NoteTitle]]`) in any note. The plugin parses these references and allows you to click them to instantly open the cross-vault note in the read-only preview. If the name is ambiguous, clicking opens a searchable chooser showing each full relative path. Generated links use `[[Folder/README@vault]]` when a basename is duplicated; a duplicated note at the vault root uses `[[/README@vault]]`. **Copy Cross-Vault Link for Current File** opens a vault chooser and copies this natural wikilink format instead of a protocol URL.
+
+Both spellings always open, so a vault can switch format without breaking a single existing link. **Settings > Cross-Vault Links > Link format** decides which one is *written*; `Note@vault` is the default because it starts with the note name.
+
+Typing a note name followed by `@` suggests the notes with that name in your other vaults, and picking one writes the whole link. It also works inside `[[`. The suggester only offers names that actually exist elsewhere, so `joao@gmail.com` and `Meeting@work` are left alone.
 
 ### 4. Recent Files & Quick Switch
 - **Recent Files**: See the 50 most recently modified files across *all* your vaults.

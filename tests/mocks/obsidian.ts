@@ -97,6 +97,16 @@ export class Modal {
   }
 }
 
+/** Only the surface an EditorSuggest subclass needs to exist and be constructed. */
+export class EditorSuggest<T> {
+  context: unknown = null;
+  protected suggestions: T[] = [];
+
+  constructor(public readonly app: App) {}
+
+  close(): void {}
+}
+
 export class PluginSettingTab {
   containerEl = new FakeElement('div');
 

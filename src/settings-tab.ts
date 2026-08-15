@@ -7,6 +7,7 @@ import { VirtualLinkTargetsModal } from './modals/virtual-link-targets-modal';
 import type { SharedSettingsPatch } from './shared-settings/shared-settings-store';
 import type { VirtualLinkColorMode } from './shared-settings/shared-settings-types';
 import { normalizeExistingPathKey, normalizePathDisplay } from './shared-settings/path-identity';
+import { DEFAULT_CROSS_VAULT_LINK_FORMAT, type CrossVaultLinkFormat } from './cross-vault-syntax';
 
 const VIRTUAL_LINKER_PLUGIN_ID = 'virtual-linker';
 const VIRTUAL_LINKER_REPOSITORY_URL = 'https://github.com/ErraticPattern/obsidian-virtual-linker';
@@ -578,6 +579,23 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
         type: 'group',
         heading: 'Cross-Vault Links',
         items: [
+          {
+            name: "Link format",
+            // Local, not shared: both spellings are always readable, so vaults
+            // may disagree about which one they write without breaking links.
+            desc: "How new cross-vault links are written. Both forms always open, so changing this never breaks existing links. Typing a note name followed by @ suggests the note@vault form as you write.",
+            render: (setting: Setting) => {
+              setting.addDropdown(dropdown => dropdown
+                .addOption('note-at-vault', 'Note@vault  (Claude@mathematics)')
+                .addOption('vault-double-colon', 'vault::Note  (mathematics::Claude)')
+                .setValue(this.plugin.settings.crossVaultLinkFormat ?? DEFAULT_CROSS_VAULT_LINK_FORMAT)
+                .onChange(async (value) => {
+                  this.plugin.settings.crossVaultLinkFormat = value as CrossVaultLinkFormat;
+                  await this.plugin.saveSettings();
+                })
+              );
+            }
+          },
           {
             name: "Show vault badge",
             desc: "Prefix [[vault::note]] links with a small badge showing the vault name. Applies in Reading View; re-open the note to see the change.",

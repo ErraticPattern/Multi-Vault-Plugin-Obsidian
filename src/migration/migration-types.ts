@@ -1,3 +1,4 @@
+import type { CrossVaultLinkFormat } from '../cross-vault-syntax';
 import type { IndexedNotePath } from './destination-paths';
 import type { IndexMutation } from '../indexer/index-mutations';
 
@@ -88,6 +89,10 @@ export interface MoveCopyPlanningInput {
   sourceIndexedFiles: IndexedNotePath[];
   targetIndexedFiles: IndexedNotePath[];
   preserveLinks: boolean;
+  /** Spelling used for links this plan writes. Defaults to Note@vault. */
+  linkFormat?: CrossVaultLinkFormat;
+  /** Every configured vault name, so Note@vault links are recognised as cross-vault. */
+  knownVaultNames?: string[];
 }
 
 export interface RelinkPlanningInput {
@@ -96,4 +101,5 @@ export interface RelinkPlanningInput {
   targetRelativePath: string;
   notes: NoteSnapshot[];
   targetIndexedFiles: IndexedNotePath[];
+  linkFormat?: CrossVaultLinkFormat;
 }

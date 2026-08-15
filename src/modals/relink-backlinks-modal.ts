@@ -1,3 +1,5 @@
+import { formatCrossVaultWikilink } from '../migration/cross-vault-link';
+import type { CrossVaultLinkFormat } from '../cross-vault-syntax';
 import { App, Modal, Notice, Setting } from 'obsidian';
 import type { Indexer } from '../indexer/indexer';
 import type { MigrationController } from '../migration/migration-controller';
@@ -21,6 +23,7 @@ export class RelinkBacklinksModal extends Modal {
     private readonly vaultRegistry: VaultRegistry,
     private readonly indexer: Indexer,
     private readonly controller: MigrationController,
+    private readonly linkFormat: () => CrossVaultLinkFormat | undefined = () => undefined,
   ) {
     super(app);
   }
@@ -149,7 +152,8 @@ export class RelinkBacklinksModal extends Modal {
       this.previewEl.createEl('p', {
         text: `Source vault: ${preview.backlinks} backlink(s) in ${preview.affectedFiles} note(s) will change.`,
       });
-      const destination = preview.examples[0]?.after ?? `[[${this.targetVaultName()}::${activeFile.basename}]]`;
+      const destination = preview.examples[0]?.after
+        ?? formatCrossVaultWikilink(this.targetVaultName(), activeFile.basename, this.linkFormat());
       this.previewEl.createEl('p', {
         text: `Destination vault format: ${destination}`,
       });

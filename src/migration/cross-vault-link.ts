@@ -1,6 +1,13 @@
-export function formatCrossVaultWikilink(vaultName: string, noteName: string): string {
-  const vault = vaultName.trim();
-  const note = noteName.trim();
-  if (!vault || !note) throw new Error('Vault and note names are required');
-  return `[[${vault}::${note}]]`;
+import {
+  DEFAULT_CROSS_VAULT_LINK_FORMAT,
+  formatCrossVaultTarget,
+  type CrossVaultLinkFormat,
+} from '../cross-vault-syntax';
+
+export function formatCrossVaultWikilink(
+  vaultName: string,
+  noteName: string,
+  format: CrossVaultLinkFormat = DEFAULT_CROSS_VAULT_LINK_FORMAT,
+): string {
+  return `[[${formatCrossVaultTarget(vaultName, noteName, format)}]]`;
 }

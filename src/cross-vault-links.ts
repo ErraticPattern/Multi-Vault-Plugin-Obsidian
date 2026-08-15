@@ -3,6 +3,17 @@ import type MultiVaultNavigatorPlugin from './main';
 import type { IndexedFile } from './types';
 import { resolveIndexedNote } from './note-resolution';
 import { CrossVaultTargetSuggestModal } from './modals/cross-vault-target-suggest-modal';
+import { parseCrossVaultTarget, type CrossVaultRef } from './cross-vault-syntax';
+
+/**
+ * `Note@vault` is only a cross-vault link when the suffix names a configured
+ * vault, so parsing always needs the registry to decide.
+ */
+function parseWithRegistry(plugin: MultiVaultNavigatorPlugin, target: string): CrossVaultRef | null {
+  return parseCrossVaultTarget(target, (vaultName) =>
+    plugin.vaultRegistry.getVaults().some(vault => vault.name.toLowerCase() === vaultName.toLowerCase()),
+  );
+}
 
 // posAtMouse/getClickableTokenAt exist on Obsidian's editor at runtime but are
 // not part of the public typings. Feature-detected before use.
@@ -11,24 +22,7 @@ interface EditorTokenApi {
   getClickableTokenAt?(pos: EditorPosition): { type: string; text: string } | null;
 }
 
-export interface CrossVaultRef {
-  vaultName: string;
-  noteName: string;
-}
-
-// Parses "vault::note" link targets. Returns null for anything else so normal
-// wikilinks are never touched. Heading/block subpaths ("#...") are stripped.
-export function parseCrossVaultHref(href: string): CrossVaultRef | null {
-  if (!href) return null;
-  const idx = href.indexOf('::');
-  if (idx <= 0) return null;
-  const vaultName = href.slice(0, idx).trim();
-  let noteName = href.slice(idx + 2).trim();
-  const hashIdx = noteName.indexOf('#');
-  if (hashIdx !== -1) noteName = noteName.slice(0, hashIdx).trim();
-  if (!vaultName || !noteName) return null;
-  return { vaultName, noteName };
-}
+export type { CrossVaultRef } from './cross-vault-syntax';
 
 function withCrossVaultTarget(
   plugin: MultiVaultNavigatorPlugin,
@@ -113,7 +107,7 @@ export function registerCrossVaultLinks(plugin: MultiVaultNavigatorPlugin): void
     const anchors = Array.from(element.querySelectorAll<HTMLAnchorElement>('a.internal-link'));
     for (const anchor of anchors) {
       const href = anchor.getAttribute('data-href') ?? anchor.getAttribute('href') ?? '';
-      const ref = parseCrossVaultHref(href);
+      const ref = parseWithRegistry(plugin, href);
       if (!ref) continue;
       rewriteReadingViewAnchor(plugin, anchor, ref, href);
     }
@@ -133,7 +127,7 @@ export function registerCrossVaultLinks(plugin: MultiVaultNavigatorPlugin): void
     if (typeof editor.posAtMouse !== 'function' || typeof editor.getClickableTokenAt !== 'function') return;
     const token = editor.getClickableTokenAt(editor.posAtMouse(evt));
     if (!token || token.type !== 'internal-link') return;
-    const ref = parseCrossVaultHref(token.text);
+    const ref = parseWithRegistry(plugin, token.text);
     if (!ref) return;
     evt.preventDefault();
     evt.stopPropagation();

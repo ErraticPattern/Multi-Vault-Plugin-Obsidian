@@ -90,7 +90,7 @@ beforeEach(() => {
 
 describe('cross-vault clipboard links', () => {
   it('formats the selected vault and current note as a natural cross-vault wikilink', () => {
-    expect(formatCrossVaultWikilink('medicine', 'ZeroTier')).toBe('[[medicine::ZeroTier]]');
+    expect(formatCrossVaultWikilink('medicine', 'ZeroTier')).toBe('[[ZeroTier@medicine]]');
   });
 });
 
@@ -363,6 +363,7 @@ describe('MigrationController', () => {
     };
     const registry = {
       getCurrentVaultId: () => 'ideas',
+      getVaults: () => vaults,
       getVaultById: (id: string) => vaults.find((vault) => vault.id === id),
     };
     const io = new ControllerIo();
@@ -445,6 +446,7 @@ describe('MigrationController', () => {
     };
     const registry = {
       getCurrentVaultId: () => 'ideas',
+      getVaults: () => vaults,
       getVaultById: (id: string) => vaults.find((vault) => vault.id === id),
     };
     const io = new ControllerIo();
@@ -459,8 +461,8 @@ describe('MigrationController', () => {
     const plan = await controller.planMoveCopy(source, 'math', 'Notes', 'move', true);
 
     expect(plan.destinationRelativePath).toBe('Notes/Zerotier.md');
-    expect(plan.destinationContent).toBe('Uses [[ideas::EEG]].');
-    expect(plan.backlinkEdits[0].updatedContent).toBe('See [[mathematics::Zerotier]].');
+    expect(plan.destinationContent).toBe('Uses [[EEG@ideas]].');
+    expect(plan.backlinkEdits[0].updatedContent).toBe('See [[Zerotier@mathematics]].');
     expect(refreshes).toBe(0);
 
     const result = await controller.execute(plan);

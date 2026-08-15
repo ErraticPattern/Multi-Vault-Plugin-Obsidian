@@ -1,3 +1,4 @@
+import type { CrossVaultLinkFormat } from '../cross-vault-syntax';
 import type { App, TFile } from 'obsidian';
 import type { Indexer } from '../indexer/indexer';
 import type { VaultRegistry } from '../vault-registry';
@@ -46,7 +47,12 @@ export class MigrationController {
     private readonly vaultRegistry: VaultRegistry,
     private readonly indexer: Indexer,
     private readonly ioFactory: MigrationIoFactory = () => new ObsidianMigrationIo(app),
+    private readonly linkFormat: () => CrossVaultLinkFormat | undefined = () => undefined,
   ) {}
+
+  private knownVaultNames(): string[] {
+    return this.vaultRegistry.getVaults().map((vault) => vault.name);
+  }
 
   async planMoveCopy(
     activeFile: TFile,
@@ -79,6 +85,8 @@ export class MigrationController {
       sourceIndexedFiles: this.indexedMarkdownFiles(sourceVault.id),
       targetIndexedFiles: this.indexedMarkdownFiles(targetVault.id),
       preserveLinks,
+      linkFormat: this.linkFormat(),
+      knownVaultNames: this.knownVaultNames(),
     });
     const indexMutations: IndexMutation[] = [
       ...(mode === 'move' ? [{
@@ -132,6 +140,7 @@ export class MigrationController {
       targetRelativePath,
       notes,
       targetIndexedFiles,
+      linkFormat: this.linkFormat(),
     });
     const sourceVault = this.requireCurrentVault();
     const indexMutations: IndexMutation[] = plan.backlinkEdits.map((edit) => ({

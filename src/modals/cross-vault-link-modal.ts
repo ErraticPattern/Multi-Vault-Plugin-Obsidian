@@ -1,6 +1,7 @@
 import { App, Modal, Notice, Setting, type TFile } from 'obsidian';
 import { formatCrossVaultWikilink } from '../migration/cross-vault-link';
 import type { VaultRegistry } from '../vault-registry';
+import type { CrossVaultLinkFormat } from '../cross-vault-syntax';
 
 export class CrossVaultLinkModal extends Modal {
   private targetVaultId = '';
@@ -10,6 +11,7 @@ export class CrossVaultLinkModal extends Modal {
     app: App,
     private readonly activeFile: TFile,
     private readonly vaultRegistry: VaultRegistry,
+    private readonly linkFormat: () => CrossVaultLinkFormat | undefined,
   ) {
     super(app);
   }
@@ -54,7 +56,7 @@ export class CrossVaultLinkModal extends Modal {
 
   private currentLink(): string | null {
     const vault = this.vaultRegistry.getVaultById(this.targetVaultId);
-    return vault ? formatCrossVaultWikilink(vault.name, this.activeFile.basename) : null;
+    return vault ? formatCrossVaultWikilink(vault.name, this.activeFile.basename, this.linkFormat()) : null;
   }
 
   private updatePreview(): void {

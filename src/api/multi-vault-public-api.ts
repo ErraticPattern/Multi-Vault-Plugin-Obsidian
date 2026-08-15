@@ -189,7 +189,11 @@ export class MultiVaultPublicApi implements MultiVaultPublicApiV1 {
       noteReference = pathReference.includes('/') ? pathReference : `/${pathReference}`;
     }
 
-    const wikilink = formatCrossVaultWikilink(projected.target.vaultName, noteReference);
+    const wikilink = formatCrossVaultWikilink(
+      projected.target.vaultName,
+      noteReference,
+      this.settings.crossVaultLinkFormat,
+    );
     const label = alias?.trim();
     return label ? `${wikilink.slice(0, -2)}|${label}]]` : wikilink;
   }

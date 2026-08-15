@@ -15,6 +15,7 @@ import { RelinkBacklinksModal } from './modals/relink-backlinks-modal';
 import { CrossVaultLinkModal } from './modals/cross-vault-link-modal';
 import { DuplicateDetectorModal } from './modals/duplicate-detector-modal';
 import { VIEW_TYPE_EXTERNAL_FILE, ExternalFileView } from './views/external-file-view';
+import { CrossVaultSuggest } from './cross-vault-suggest';
 import { VIEW_TYPE_SEARCH_PAGE, SearchPageView } from './views/search-page-view';
 import { VIEW_TYPE_TAG_EXPLORER, TagExplorerView } from './views/tag-explorer-view';
 import { VIEW_TYPE_DAILY_DASHBOARD, DailyDashboardView } from './views/daily-dashboard-view';
@@ -96,6 +97,8 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
       this.app,
       this.vaultRegistry,
       this.indexer,
+      undefined,
+      () => this.settings.crossVaultLinkFormat,
     );
 
     // Initialize indexer (load cache)
@@ -111,7 +114,12 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
     // Register custom views
     this.registerView(
       VIEW_TYPE_EXTERNAL_FILE,
-      (leaf) => new ExternalFileView(leaf, this.searchEngine, this.fileOpener)
+      (leaf) => new ExternalFileView(
+        leaf,
+        this.searchEngine,
+        this.fileOpener,
+        () => this.settings.crossVaultLinkFormat,
+      )
     );
     this.registerView(
       VIEW_TYPE_SEARCH_PAGE,
@@ -213,6 +221,7 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
           this.vaultRegistry,
           this.indexer,
           this.migrationController,
+          () => this.settings.crossVaultLinkFormat,
         ).open();
       },
     });
@@ -234,7 +243,12 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
           new Notice('No active file');
           return;
         }
-        new CrossVaultLinkModal(this.app, activeFile, this.vaultRegistry).open();
+        new CrossVaultLinkModal(
+          this.app,
+          activeFile,
+          this.vaultRegistry,
+          () => this.settings.crossVaultLinkFormat,
+        ).open();
       }
     });
 
@@ -283,6 +297,14 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
 
     // Add settings tab
     this.addSettingTab(new MultiVaultSettingsTab(this.app, this, this.vaultRegistry, this.indexer));
+
+    // Typing "Note@" offers the notes with that name in the other vaults.
+    this.registerEditorSuggest(new CrossVaultSuggest(
+      this.app,
+      this.indexer,
+      this.vaultRegistry,
+      () => this.settings.crossVaultLinkFormat,
+    ));
 
     this.sharedSettingsService?.attachRuntime({
       replaceVaults: (vaults) => {

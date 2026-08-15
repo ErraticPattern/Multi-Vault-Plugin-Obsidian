@@ -1,3 +1,4 @@
+import { DEFAULT_CROSS_VAULT_LINK_FORMAT, type CrossVaultLinkFormat } from './cross-vault-syntax';
 import type { SharedVirtualLinkSettings } from './shared-settings/shared-settings-types';
 
 export interface VaultConfig {
@@ -50,6 +51,8 @@ export interface MultiVaultSettings {
   excludedVaultIds?: string[];
   showCrossVaultBadge: boolean;
   useVaultColorForLinks: boolean;
+  /** Which spelling new cross-vault links are written in. Both are always readable. */
+  crossVaultLinkFormat?: CrossVaultLinkFormat;
   virtualLinks?: SharedVirtualLinkSettings;
   sharedSettings?: SharedSettingsMetadata;
 }
@@ -75,6 +78,7 @@ export const DEFAULT_SETTINGS: MultiVaultSettings = {
   excludedVaultIds: [],
   showCrossVaultBadge: true,
   useVaultColorForLinks: false,
+  crossVaultLinkFormat: DEFAULT_CROSS_VAULT_LINK_FORMAT,
   virtualLinks: {
     enabled: false,
     excludedSourceVaultIds: [],

@@ -4,6 +4,8 @@ import * as path from 'path';
 import { IndexedFile } from '../types';
 import { SearchEngine } from '../search-engine';
 import { FileOpener } from '../file-opener';
+import { formatCrossVaultWikilink } from '../migration/cross-vault-link';
+import type { CrossVaultLinkFormat } from '../cross-vault-syntax';
 
 export const VIEW_TYPE_EXTERNAL_FILE = "mvn-external-file-view";
 
@@ -13,7 +15,12 @@ export class ExternalFileView extends ItemView {
   private searchEngine: SearchEngine;
   private fileOpener: FileOpener;
 
-  constructor(leaf: WorkspaceLeaf, searchEngine: SearchEngine, fileOpener: FileOpener) {
+  constructor(
+    leaf: WorkspaceLeaf,
+    searchEngine: SearchEngine,
+    fileOpener: FileOpener,
+    private readonly linkFormat: () => CrossVaultLinkFormat | undefined = () => undefined,
+  ) {
     super(leaf);
     this.searchEngine = searchEngine;
     this.fileOpener = fileOpener;
@@ -80,7 +87,7 @@ export class ExternalFileView extends ItemView {
     const btnLink = inlineActions.createEl('span', { cls: 'clickable-icon', attr: { 'aria-label': 'Copy Cross-Vault Link' } });
     setIcon(btnLink, "link");
     btnLink.onclick = async () => {
-      const linkText = `[[${this.file!.vaultName}::${this.file!.basename}]]`;
+      const linkText = formatCrossVaultWikilink(this.file!.vaultName, this.file!.basename, this.linkFormat());
       await navigator.clipboard.writeText(linkText);
       new Notice("Cross-Vault Link copied to clipboard!");
     };

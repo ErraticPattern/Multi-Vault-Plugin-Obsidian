@@ -200,13 +200,13 @@ describe('MultiVault public API v1 contract', () => {
 
   it('formats unique, path-qualified, and explicit-root canonical wikilinks', () => {
     expect(test.api.formatWikilink({ vaultId: 'medicine', relativePath: 'Notes/ZeroTier.md' }))
-      .toBe('[[medicine::ZeroTier]]');
+      .toBe('[[ZeroTier@medicine]]');
     expect(test.api.formatWikilink(
       { vaultId: 'medicine', relativePath: 'Archive/README.md' },
       'Read me',
-    )).toBe('[[medicine::Archive/README|Read me]]');
+    )).toBe('[[Archive/README@medicine|Read me]]');
     expect(test.api.formatWikilink({ vaultId: 'medicine', relativePath: 'README.md' }))
-      .toBe('[[medicine::/README]]');
+      .toBe('[[/README@medicine]]');
   });
 
   it('opens only the exact canonical indexed target', async () => {

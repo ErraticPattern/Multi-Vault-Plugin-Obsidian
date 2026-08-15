@@ -82,7 +82,7 @@ describe('planMoveOrCopy move', () => {
       preserveLinks: true,
     });
 
-    expect(plan.destinationContent).toContain('[[ideas::EEG#Acquisition|EEG setup]]');
+    expect(plan.destinationContent).toContain('[[EEG@ideas#Acquisition|EEG setup]]');
     expect(plan.destinationContent).toContain('[[ideas::Existing]]');
     expect(plan.destinationContent).toContain('![[Diagram.png]]');
     expect(plan.destinationContent).toContain('[[Unknown]]');
@@ -91,11 +91,11 @@ describe('planMoveOrCopy move', () => {
     expect(plan.backlinkEdits).toEqual([{
       path: 'Notes/Network index.md',
       originalContent: backlinkContent,
-      updatedContent: 'See [[mathematics::Zerotier|ZeroTier]].',
+      updatedContent: 'See [[Zerotier@mathematics|ZeroTier]].',
       rewrittenLinks: 1,
       rewrites: [{
         before: '[[Zerotier|ZeroTier]]',
-        after: '[[mathematics::Zerotier|ZeroTier]]',
+        after: '[[Zerotier@mathematics|ZeroTier]]',
       }],
     }]);
     expect(plan.outgoingLinksRewritten).toBe(1);
@@ -133,7 +133,7 @@ describe('planMoveOrCopy move', () => {
       preserveLinks: true,
     });
 
-    expect(plan.backlinkEdits[0].updatedContent).toBe('[[mathematics::Notes/Zerotier]]');
+    expect(plan.backlinkEdits[0].updatedContent).toBe('[[Notes/Zerotier@mathematics]]');
   });
 });
 
@@ -236,7 +236,7 @@ describe('copy and standalone relink planning', () => {
       preserveLinks: true,
     });
 
-    expect(plan.destinationContent).toBe('Uses [[ideas::EEG]].');
+    expect(plan.destinationContent).toBe('Uses [[EEG@ideas]].');
     expect(plan.backlinkEdits).toEqual([]);
     expect(plan.backlinksRewritten).toBe(0);
     expect(plan.sourceOriginalContent).toBe(sourceContent);
@@ -269,8 +269,56 @@ describe('copy and standalone relink planning', () => {
     expect(plan.destinationContent).toBeNull();
     expect(plan.destinationAbsolutePath).toBeNull();
     expect(plan.backlinkEdits[0].updatedContent)
-      .toBe('See [[mathematics::Zerotier#Setup|setup]].');
+      .toBe('See [[Zerotier@mathematics#Setup|setup]].');
     expect(plan.backlinksRewritten).toBe(1);
     expect(plan.sourceOriginalContent).toBe(sourceContent);
+  });
+});
+
+describe('cross-vault link format', () => {
+  function planWith(overrides: Partial<Parameters<typeof planMoveOrCopy>[0]>) {
+    const sourceContent = [
+      'Uses [[EEG]].',
+      'Already [[Existing@ideas]].',
+      'Legacy [[ideas::Legacy]].',
+    ].join('\n');
+    const notes = [
+      note('Projects/Zerotier.md', sourceContent, [
+        link(sourceContent, '[[EEG]]', 'EEG', 'Notes/EEG.md'),
+        link(sourceContent, '[[Existing@ideas]]', 'Existing@ideas', null),
+        link(sourceContent, '[[ideas::Legacy]]', 'ideas::Legacy', null),
+      ]),
+      note('Notes/EEG.md', 'EEG content.', []),
+    ];
+
+    return planMoveOrCopy({
+      mode: 'move',
+      sourcePath: 'Projects/Zerotier.md',
+      sourceVaultName: 'ideas',
+      targetVaultName: 'mathematics',
+      destinationAbsolutePath: 'C:/vaults/mathematics/Notes/Zerotier.md',
+      destinationRelativePath: 'Notes/Zerotier.md',
+      notes,
+      sourceIndexedFiles: notes.map(({ path, basename }) => ({ relativePath: path, basename })),
+      targetIndexedFiles: [],
+      preserveLinks: true,
+      ...overrides,
+    });
+  }
+
+  it('writes the note@vault form by default', () => {
+    expect(planWith({}).destinationContent).toContain('[[EEG@ideas]]');
+  });
+
+  it('writes the legacy form when the vault asks for it', () => {
+    expect(planWith({ linkFormat: 'vault-double-colon' }).destinationContent).toContain('[[ideas::EEG]]');
+  });
+
+  it('never rewrites a link that already points at another vault, in either form', () => {
+    const plan = planWith({ knownVaultNames: ['ideas', 'mathematics', 'medicine'] });
+
+    expect(plan.destinationContent).toContain('[[Existing@ideas]]');
+    expect(plan.destinationContent).toContain('[[ideas::Legacy]]');
+    expect(plan.skipped.filter((entry) => entry.reason === 'already-cross-vault')).toHaveLength(2);
   });
 });
