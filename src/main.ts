@@ -16,6 +16,7 @@ import { CrossVaultLinkModal } from './modals/cross-vault-link-modal';
 import { DuplicateDetectorModal } from './modals/duplicate-detector-modal';
 import { VIEW_TYPE_EXTERNAL_FILE, ExternalFileView } from './views/external-file-view';
 import { CrossVaultSuggest } from './cross-vault-suggest';
+import { registerUnlinkCommands } from './unlink-commands';
 import { VIEW_TYPE_SEARCH_PAGE, SearchPageView } from './views/search-page-view';
 import { VIEW_TYPE_TAG_EXPLORER, TagExplorerView } from './views/tag-explorer-view';
 import { VIEW_TYPE_DAILY_DASHBOARD, DailyDashboardView } from './views/daily-dashboard-view';
@@ -250,6 +251,15 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
           () => this.settings.crossVaultLinkFormat,
         ).open();
       }
+    });
+
+    // Turns [[Note@vault]] back into the text it displays, for the whole note or
+    // the whole vault.
+    registerUnlinkCommands(this, {
+      isKnownVault: () => {
+        const names = new Set(this.vaultRegistry.getVaults().map((vault) => vault.name));
+        return (vaultName: string) => names.has(vaultName);
+      },
     });
 
     this.addCommand({

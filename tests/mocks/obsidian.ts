@@ -97,6 +97,19 @@ export class Modal {
   }
 }
 
+/** Enough of a Plugin/MarkdownView to let command modules import and register. */
+export class Plugin {
+  constructor(public readonly app: App, public readonly manifest: unknown = {}) {}
+
+  addCommand(command: unknown): unknown {
+    return command;
+  }
+}
+
+export class MarkdownView {
+  file: TFile | null = null;
+}
+
 /** Only the surface an EditorSuggest subclass needs to exist and be constructed. */
 export class EditorSuggest<T> {
   context: unknown = null;

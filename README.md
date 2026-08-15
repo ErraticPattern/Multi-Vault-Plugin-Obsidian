@@ -40,6 +40,10 @@ Both spellings always open, so a vault can switch format without breaking a sing
 
 Typing a note name followed by `@` suggests the notes with that name in your other vaults, and picking one writes the whole link. It also works inside `[[`. The suggester only offers names that actually exist elsewhere, so `joao@gmail.com` and `Meeting@work` are left alone.
 
+Two commands take them back out again. **Remove cross-vault links in current note** and **Remove cross-vault links in all notes** replace every `[[Note@vault]]` with the text it displays: `[[As@hobbies|as]]` becomes `as`, and a link with no alias becomes its note name. Links to notes in the current vault are never touched, and neither is anything inside code blocks, inline code, formulas or frontmatter.
+
+This reads the note's source rather than Obsidian's link index, so it also reaches links inside a markdown table, where an unescaped `|` stops Obsidian from indexing the link at all. The vault-wide command previews the affected notes and asks before writing; the single-note command goes through the editor, so Ctrl+Z undoes it.
+
 ### 4. Recent Files & Quick Switch
 - **Recent Files**: See the 50 most recently modified files across *all* your vaults.
 - **Switch Vault**: Instantly launch your other vaults without going through the native Obsidian Vault Manager.
@@ -67,6 +71,8 @@ Open the **Command Palette** (Ctrl/Cmd + P) and type `Multi-Vault Navigator` to 
 - **Move/Copy Current File to Vault**
 - **Relink Backlinks to Existing Cross-Vault Note**
 - **Copy Cross-Vault Link for Current File**
+- **Remove cross-vault links in current note**
+- **Remove cross-vault links in all notes**
 - **Find Duplicate Notes**
 - **Open Global Tag Explorer**
 - **Open Cross-Vault Daily Notes**
