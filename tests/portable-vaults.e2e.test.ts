@@ -27,13 +27,13 @@ it('migrates synced Windows settings and cache onto Flatpak Linux paths idempote
   ] } as never;
   const registry = new VaultRegistry(app, settings, { platform: 'linux', env: {}, home: root, localPaths, discoveredVaults: discovered, generateId: () => 'generated' });
   expect(registry.getVaults()).toHaveLength(2);
-  expect(registry.getVaultById('localIdeas')).toMatchObject({ available: true, path: ideas });
+  expect(registry.getVaultById('windowsIdeas')).toMatchObject({ available: true, path: ideas });
   expect(registry.getVaultById('remoteMedicine')).toMatchObject({ available: false });
 
   let cache = JSON.stringify({ version: 2, generatedAt: '', files: [{ id: 'one', vaultId: 'windowsIdeas', vaultName: 'ideas', absolutePath: 'C:\\Users\\joaop\\obsidian\\ideas\\Note.md', relativePath: 'Note.md', basename: 'Note', extension: '.md', mtime: 1, size: 1 }] });
   const cacheApp = { vault: { configDir: '.obsidian', adapter: { exists: async () => true, read: async () => cache, write: async (_p: string, value: string) => { cache = value; }, mkdir: async () => undefined } } } as never;
   const migrated = await new IndexStore(cacheApp).loadIndex(registry);
-  expect(migrated.files[0]).toMatchObject({ vaultId: 'localIdeas', absolutePath: path.join(ideas, 'Note.md') });
+  expect(migrated.files[0]).toMatchObject({ vaultId: 'windowsIdeas', absolutePath: path.join(ideas, 'Note.md') });
   const first = JSON.stringify(registry.getPersistedVaults());
   expect(first).not.toContain('C:');
   const second = new VaultRegistry(app, { vaults: JSON.parse(first) } as never, { platform: 'linux', env: {}, home: root, localPaths, discoveredVaults: discovered, generateId: () => 'generated' });
