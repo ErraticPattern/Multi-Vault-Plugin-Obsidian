@@ -88,7 +88,7 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
     });
     
     // Save settings right away in case auto-detect added vaults
-    this.settings.vaults = this.vaultRegistry.getPersistedVaults();
+    this.settings.vaults = this.vaultRegistry.getVaults();
     await this.saveSettings();
 
     this.indexer = new Indexer(this.app, this.vaultRegistry, this.settings);
@@ -365,8 +365,8 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
   }
 
   async saveSettings() {
-    this.settings.vaults = this.vaultRegistry.getPersistedVaults();
-    await this.saveData(this.settings);
+    this.settings.vaults = this.vaultRegistry.getVaults();
+    await this.saveData({ ...this.settings, vaults: this.vaultRegistry.getPersistedVaults() });
     this.publicApiInstance?.refreshConfiguration();
   }
 

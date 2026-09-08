@@ -25,8 +25,8 @@ describe('vault registry portability', () => {
       discoveredVaults: [{ registryId: 'registry-id', name: 'ideas', path: local, registryPath: '/config/obsidian.json' }],
       generateId: () => 'generated',
     });
-    expect(registry.getVaults()).toEqual([expect.objectContaining({ id: 'registry-id', path: local, available: true, enabled: true, color: '#123456' })]);
-    expect(registry.getIdAliases().get('windows-id')).toBe('registry-id');
+    expect(registry.getVaults()).toEqual([expect.objectContaining({ id: 'windows-id', path: local, available: true, enabled: true, color: '#123456' })]);
+    expect(registry.getIdAliases().get('linux-id')).toBe('windows-id');
     expect(registry.getPersistedVaults()[0]).not.toHaveProperty('path');
   });
 
@@ -36,7 +36,7 @@ describe('vault registry portability', () => {
     const registry = new VaultRegistry(app(current), { vaults: [{ id: 'medicine-id', name: 'medicine', enabled: true }] } as never, {
       platform: 'linux', home: '/home/a', env: {}, localPaths: store(), discoveredVaults: [], generateId: () => 'current-id',
     });
-    expect(registry.getVaultById('medicine-id')).toMatchObject({ available: false, path: null });
+    expect(registry.getVaultById('medicine-id')).toMatchObject({ available: false, path: '' });
     expect(registry.relinkVault('medicine-id', target)).toBe(true);
     expect(registry.getVaultById('medicine-id')).toMatchObject({ available: true, path: target });
   });

@@ -12,17 +12,12 @@ export interface SharedVaultConfig {
   path?: string;
 }
 
-export interface AvailableVaultConfig extends Omit<SharedVaultConfig, 'path'> {
+export interface VaultConfig extends Omit<SharedVaultConfig, 'path'> {
   path: string;
-  available: true;
+  available?: boolean;
 }
 
-export interface UnavailableVaultConfig extends Omit<SharedVaultConfig, 'path'> {
-  path: null;
-  available: false;
-}
-
-export type VaultConfig = AvailableVaultConfig | UnavailableVaultConfig;
+export type AvailableVaultConfig = VaultConfig;
 
 export interface IndexedFile {
   id: string;
@@ -54,7 +49,7 @@ export interface SharedSettingsMetadata {
 }
 
 export interface MultiVaultSettings {
-  vaults: SharedVaultConfig[];
+  vaults: VaultConfig[];
   indexOptions: IndexOptions;
   savedSearches: { id: string, name: string, query: string }[];
   pinnedFiles: string[];

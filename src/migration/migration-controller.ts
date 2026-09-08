@@ -225,7 +225,7 @@ export class MigrationController {
 
   private requireVault(id: string): AvailableVaultConfig {
     const vault = this.vaultRegistry.getVaultById(id);
-    if (!vault || !vault.available) throw new Error(`Vault is unavailable: ${id}`);
+    if (!vault || vault.available === false) throw new Error(`Vault is unavailable: ${id}`);
     return vault;
   }
 }

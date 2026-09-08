@@ -105,7 +105,6 @@ function vaultCatalogRecord(vault: VaultConfig): unknown {
   return {
     id: vault.id,
     name: vault.name,
-    path: vault.path,
     enabled: vault.enabled,
     includePatterns: vault.includePatterns ?? [],
     excludePatterns: vault.excludePatterns ?? [],
@@ -403,13 +402,16 @@ export class SharedSettingsService {
   }
 
   private isCurrentVaultExcluded(manifest: SharedSettingsManifest): boolean {
-    const currentVault = manifest.vaults.find((vault) => vault.pathKey === this.currentVaultPathKey)
-      ?? manifest.vaults.find((vault) => this.vaultMatchesCurrentPath(vault));
-    return currentVault !== undefined && manifest.excludedVaultIds.includes(currentVault.id);
+    const localCurrent = this.settings.vaults.find((vault) =>
+      vault.path && normalizeExistingPathKey(vault.path, process.platform) === this.currentVaultPathKey);
+    if (localCurrent) return manifest.excludedVaultIds.includes(localCurrent.id);
+    const legacyCurrent = manifest.vaults.find((vault) => this.vaultMatchesCurrentPath(vault));
+    return legacyCurrent !== undefined && manifest.excludedVaultIds.includes(legacyCurrent.id);
   }
 
   private vaultMatchesCurrentPath(vault: SharedVaultRecord): boolean {
-    return normalizeExistingPathKey(vault.path, process.platform) === this.currentVaultPathKey;
+    const legacyPath = vault.path || vault.pathKey;
+    return Boolean(legacyPath) && normalizeExistingPathKey(legacyPath!, process.platform) === this.currentVaultPathKey;
   }
 
   private recordError(error: unknown): SyncApplyResult {

@@ -45,7 +45,8 @@ export class FileOperationModal extends Modal {
     this.contentEl.createEl('p', { text: `File: ${activeFile.path}` });
 
     const currentVaultId = this.vaultRegistry.getCurrentVaultId();
-    const otherVaults = this.vaultRegistry.getEnabledVaults().filter((vault) => vault.id !== currentVaultId);
+    const otherVaults = this.vaultRegistry.getVaults().filter((vault) =>
+      vault.id !== currentVaultId && vault.enabled && vault.available !== false);
     if (otherVaults.length === 0) {
       this.contentEl.createEl('p', { text: 'No other vaults are configured.' });
       return;

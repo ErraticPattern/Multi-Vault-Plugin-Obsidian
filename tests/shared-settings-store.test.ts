@@ -116,7 +116,7 @@ describe('SharedSettingsStore immutable patch journal', () => {
     const initialized = await store.initialize(createProjection(), 'ideas-instance');
 
     expect(initialized).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       revision: 0,
       writerInstanceId: 'ideas-instance',
       enabled: true,
@@ -495,7 +495,7 @@ describe('SharedSettingsStore immutable patch journal', () => {
     const futureId = '0001754827200000-2222222222222222-000000000001-22222222222222222222222222222222';
     const future = {
       ...manualEnvelope(futureId, { kind: 'set-enabled', enabled: false }),
-      schemaVersion: 2,
+      schemaVersion: 3,
     };
     const futureContent = `${JSON.stringify(future)}\n`;
     const futurePath = path.join(patchesPath(futureStore.root), `${futureId}.json`);
@@ -521,7 +521,7 @@ describe('SharedSettingsStore immutable patch journal', () => {
           id: 'duplicate-path',
           pathKey: 'c:/vaults/ideas',
           path: 'C:/Vaults/Ideas',
-          name: 'Duplicate Ideas',
+          name: '',
           enabled: true,
         },
       })),
@@ -585,7 +585,7 @@ describe('SharedSettingsStore immutable patch journal', () => {
 
     const future = await createStore();
     await mkdir(journalPath(future.root), { recursive: true });
-    const futureSeed = { ...invalidSeed, schemaVersion: 2, revision: 0, futureField: 'kept' };
+    const futureSeed = { ...invalidSeed, schemaVersion: 3, revision: 0, futureField: 'kept' };
     const futureContent = JSON.stringify(futureSeed);
     await writeFile(seedPath(future.root), futureContent, 'utf8');
     await expect(future.store.read()).rejects.toBeInstanceOf(UnsupportedSharedSettingsVersionError);

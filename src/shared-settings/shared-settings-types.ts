@@ -1,9 +1,10 @@
-export const SHARED_SETTINGS_SCHEMA_VERSION = 1 as const;
+export const SHARED_SETTINGS_SCHEMA_VERSION = 2 as const;
 
 export interface SharedVaultRecord {
   id: string;
-  pathKey: string;
-  path: string;
+  /** Legacy schema-1 path fields, accepted only while migrating old journals. */
+  pathKey?: string;
+  path?: string;
   name: string;
   color?: string;
   icon?: string;
@@ -34,7 +35,7 @@ export interface SharedSettingsProjection {
 }
 
 export interface SharedSettingsManifest extends SharedSettingsProjection {
-  schemaVersion: 1;
+  schemaVersion: 2;
   revision: number;
   updatedAt: string;
   writerInstanceId: string;

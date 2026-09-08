@@ -146,12 +146,8 @@ function parseVault(value: unknown, index: number): VaultConfig {
 
 function validateProjectedSeed(seed: SharedSettingsProjection): void {
   const vaultIds = seed.vaults.map((vault) => vault.id);
-  const pathKeys = seed.vaults.map((vault) => vault.pathKey);
   if (new Set(vaultIds).size !== vaultIds.length) {
     throw new Error('Ideas data.json produces duplicate canonical vault IDs. Shared configuration remains off.');
-  }
-  if (new Set(pathKeys).size !== pathKeys.length) {
-    throw new Error('Ideas data.json produces duplicate canonical vault paths. Shared configuration remains off.');
   }
   const knownIds = new Set(vaultIds);
   if (seed.excludedVaultIds.some((vaultId) => !knownIds.has(vaultId))) {
@@ -225,8 +221,7 @@ export async function loadIdeasSeed(
     enabled: true,
   };
   validateProjectedSeed(seed);
-  const ideasPathKey = normalizeExistingPathKey(ideasVault.path, process.platform);
-  if (!seed.vaults.some((vault) => vault.pathKey === ideasPathKey)) {
+  if (!seed.vaults.some((vault) => vault.id === ideasVault.id)) {
     throw new Error('Ideas data.json does not contain the canonical Ideas vault. Shared configuration remains off.');
   }
 
@@ -242,8 +237,8 @@ export function makeSharedSeedPreview(
     vaults: seed.vaults.map((vault) => ({
       id: vault.id,
       name: vault.name,
-      path: vault.path,
-      pathKey: vault.pathKey,
+      path: vault.path ?? 'Resolved per device',
+      pathKey: vault.pathKey ?? vault.id,
       color: vault.color ?? null,
       icon: vault.icon ?? null,
       enabled: vault.enabled,

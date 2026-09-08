@@ -30,9 +30,9 @@ export class VaultRegistry {
   }
 
   getVaults(): VaultConfig[] { return [...this.vaults.values()]; }
-  getEnabledVaults(): AvailableVaultConfig[] { return this.getVaults().filter((v): v is AvailableVaultConfig => v.enabled && v.available); }
+  getEnabledVaults(): AvailableVaultConfig[] { return this.getVaults().filter(v => v.enabled && v.available !== false); }
   getVaultById(id: string): VaultConfig | undefined { return this.vaults.get(this.aliases.get(id) ?? id); }
-  getAvailableVaultById(id: string): AvailableVaultConfig | undefined { const v = this.getVaultById(id); return v?.available ? v : undefined; }
+  getAvailableVaultById(id: string): AvailableVaultConfig | undefined { const v = this.getVaultById(id); return v && v.available !== false ? v : undefined; }
   getIdAliases(): ReadonlyMap<string, string> { return this.aliases; }
   getPersistedVaults(): SharedVaultConfig[] { return this.shared.map(({ path: _path, ...vault }) => ({ ...vault })); }
 
@@ -61,7 +61,7 @@ export class VaultRegistry {
   }
   removeVault(id: string): void { const canonical = this.aliases.get(id) ?? id; this.vaults.delete(canonical); this.shared = this.shared.filter(v => v.id !== canonical); this.deps.localPaths.remove(canonical); }
   validateVaultPath(value: string): boolean { try { return fs.statSync(value).isDirectory() && fs.statSync(path.join(value, this.app.vault.configDir)).isDirectory(); } catch { return false; } }
-  getCurrentVaultId(): string | null { const base = this.currentPath(); if (!base) return null; return this.getVaults().find(v => v.available && normalizeVaultPath(v.path, this.deps.platform) === normalizeVaultPath(base, this.deps.platform))?.id ?? null; }
+  getCurrentVaultId(): string | null { const base = this.currentPath(); if (!base) return null; return this.getVaults().find(v => v.available !== false && normalizeVaultPath(v.path, this.deps.platform) === normalizeVaultPath(base, this.deps.platform))?.id ?? null; }
 
   private reconcile(input: SharedVaultConfig[]): void {
     const groups = new Map<string, SharedVaultConfig[]>();
@@ -80,7 +80,7 @@ export class VaultRegistry {
         const candidate = this.deps.localPaths.get(id) ?? localDiscovery?.path ?? legacy;
         const resolved = candidate ? expandPortablePath(candidate, this.deps.env, this.deps.home) : null;
         this.shared.push(shared);
-        this.vaults.set(id, resolved && this.validateVaultPath(resolved) ? { ...shared, path: resolved, available: true } : { ...shared, path: null, available: false });
+        this.vaults.set(id, resolved && this.validateVaultPath(resolved) ? { ...shared, path: resolved, available: true } : { ...shared, path: '', available: false });
       }
     }
   }

@@ -1,5 +1,4 @@
 import { createHash, randomBytes as cryptoRandomBytes } from 'node:crypto';
-import { isDeepStrictEqual } from 'node:util';
 import {
   link,
   mkdir,
@@ -58,7 +57,7 @@ export type SharedSettingsPatch =
   | { kind: 'set-virtual-link-style'; mode: VirtualLinkColorMode; intensity: number };
 
 export interface SharedSettingsPatchEnvelope {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   id: string;
   writerInstanceId: string;
   logicalClock: number;
@@ -144,15 +143,21 @@ function validateVault(
   vaultValue: unknown,
   field: string,
   invalid: (message: string) => never = invalidManifest,
+  schemaVersion: 1 | 2 = SHARED_SETTINGS_SCHEMA_VERSION,
 ): asserts vaultValue is SharedVaultRecord {
   const vault = requireRecord(vaultValue, field, invalid);
   requireNonEmptyString(vault.id, `${field}.id`, invalid);
-  requireNonEmptyString(vault.pathKey, `${field}.pathKey`, invalid);
-  requireNonEmptyString(vault.path, `${field}.path`, invalid);
+  if (schemaVersion === 1) {
+    requireNonEmptyString(vault.pathKey, `${field}.pathKey`, invalid);
+    requireNonEmptyString(vault.path, `${field}.path`, invalid);
+  } else {
+    if (vault.pathKey !== undefined) requireNonEmptyString(vault.pathKey, `${field}.pathKey`, invalid);
+    if (vault.path !== undefined) requireNonEmptyString(vault.path, `${field}.path`, invalid);
+  }
   requireNonEmptyString(vault.name, `${field}.name`, invalid);
   requireBoolean(vault.enabled, `${field}.enabled`, invalid);
 
-  if (vault.pathKey.includes('\\')) invalid(`${field}.pathKey must use forward slashes.`);
+  if (vault.pathKey?.includes('\\')) invalid(`${field}.pathKey must use forward slashes.`);
   if (vault.color !== undefined && (typeof vault.color !== 'string' || !HEX_COLOR_PATTERN.test(vault.color))) {
     invalid(`${field}.color must be a six-digit hexadecimal color.`);
   }
@@ -167,8 +172,8 @@ function validateManifest(value: unknown, expectedRevision?: number): asserts va
   if (typeof manifest.schemaVersion === 'number' && manifest.schemaVersion > SHARED_SETTINGS_SCHEMA_VERSION) {
     throw new UnsupportedSharedSettingsVersionError(manifest.schemaVersion);
   }
-  if (manifest.schemaVersion !== SHARED_SETTINGS_SCHEMA_VERSION) {
-    invalidManifest(`schemaVersion must be ${SHARED_SETTINGS_SCHEMA_VERSION}.`);
+  if (manifest.schemaVersion !== 1 && manifest.schemaVersion !== SHARED_SETTINGS_SCHEMA_VERSION) {
+    invalidManifest(`schemaVersion must be 1 or ${SHARED_SETTINGS_SCHEMA_VERSION}.`);
   }
   if (!Number.isSafeInteger(manifest.revision) || (manifest.revision as number) < 0) {
     invalidManifest('revision must be a non-negative safe integer.');
@@ -183,9 +188,9 @@ function validateManifest(value: unknown, expectedRevision?: number): asserts va
   requireStringArray(manifest.excludedVaultIds, 'excludedVaultIds');
 
   if (!Array.isArray(manifest.vaults)) invalidManifest('vaults must be an array.');
-  manifest.vaults.forEach((vault, index) => validateVault(vault, `vaults[${index}]`));
+  manifest.vaults.forEach((vault, index) => validateVault(vault, `vaults[${index}]`, invalidManifest, manifest.schemaVersion as 1 | 2));
   const vaultIds = manifest.vaults.map((vault) => vault.id);
-  const pathKeys = manifest.vaults.map((vault) => vault.pathKey);
+  const pathKeys = manifest.vaults.map((vault) => vault.pathKey).filter((value): value is string => value !== undefined);
   if (new Set(vaultIds).size !== vaultIds.length) invalidManifest('vault IDs must be unique.');
   if (new Set(pathKeys).size !== pathKeys.length) invalidManifest('vault path keys must be unique.');
   const knownVaultIds = new Set(vaultIds);
@@ -228,7 +233,7 @@ function validateManifest(value: unknown, expectedRevision?: number): asserts va
   }
 }
 
-function validatePatch(value: unknown): asserts value is SharedSettingsPatch {
+function validatePatch(value: unknown, schemaVersion: 1 | 2 = SHARED_SETTINGS_SCHEMA_VERSION): asserts value is SharedSettingsPatch {
   const patch = requireRecord(value, 'patch', invalidPatch);
   requireNonEmptyString(patch.kind, 'patch.kind', invalidPatch);
 
@@ -244,7 +249,7 @@ function validatePatch(value: unknown): asserts value is SharedSettingsPatch {
       return;
     case 'upsert-vault':
       requireOnlyFields(patch, ['kind', 'vault'], 'upsert-vault patch', invalidPatch);
-      validateVault(patch.vault, 'patch.vault', invalidPatch);
+      validateVault(patch.vault, 'patch.vault', invalidPatch, schemaVersion);
       return;
     case 'remove-vault':
       requireOnlyFields(patch, ['kind', 'vaultId'], 'remove-vault patch', invalidPatch);
@@ -329,8 +334,8 @@ function validateEnvelope(value: unknown, expectedId: string): asserts value is 
   if (typeof envelope.schemaVersion === 'number' && envelope.schemaVersion > SHARED_SETTINGS_SCHEMA_VERSION) {
     throw new UnsupportedSharedSettingsVersionError(envelope.schemaVersion);
   }
-  if (envelope.schemaVersion !== SHARED_SETTINGS_SCHEMA_VERSION) {
-    invalidPatch(`schemaVersion must be ${SHARED_SETTINGS_SCHEMA_VERSION}.`);
+  if (envelope.schemaVersion !== 1 && envelope.schemaVersion !== SHARED_SETTINGS_SCHEMA_VERSION) {
+    invalidPatch(`schemaVersion must be 1 or ${SHARED_SETTINGS_SCHEMA_VERSION}.`);
   }
   requireNonEmptyString(envelope.id, 'patch envelope.id', invalidPatch);
   if (!PATCH_ID_PATTERN.test(envelope.id)) invalidPatch('patch envelope.id has an invalid format.');
@@ -341,7 +346,7 @@ function validateEnvelope(value: unknown, expectedId: string): asserts value is 
   }
   requireNonEmptyString(envelope.createdAt, 'patch envelope.createdAt', invalidPatch);
   if (Number.isNaN(Date.parse(envelope.createdAt))) invalidPatch('patch envelope.createdAt must be a valid timestamp.');
-  validatePatch(envelope.patch);
+  validatePatch(envelope.patch, envelope.schemaVersion);
 }
 
 function cloneVault(vault: SharedVaultRecord): SharedVaultRecord {
@@ -611,6 +616,7 @@ export class SharedSettingsStore {
     if (Number.isNaN(createdAt.getTime())) invalidManifest('updatedAt must be a valid timestamp.');
     const candidate = {
       ...seed,
+      vaults: seed.vaults.map(({ path: _path, pathKey: _pathKey, ...vault }) => vault),
       schemaVersion: SHARED_SETTINGS_SCHEMA_VERSION,
       revision: 0,
       updatedAt: createdAt.toISOString(),
@@ -761,14 +767,18 @@ export class SharedSettingsStore {
       throw error;
     }
     validateManifest(parsed, 0);
-    return parsed;
+    return {
+      ...parsed,
+      schemaVersion: SHARED_SETTINGS_SCHEMA_VERSION,
+      vaults: parsed.vaults.map(({ path: _path, pathKey: _pathKey, ...vault }) => vault),
+    };
   }
 
   private resolveExistingSeed(
     existing: SharedSettingsManifest,
     candidate: SharedSettingsManifest,
   ): SharedSettingsManifest {
-    if (isDeepStrictEqual(seedComparable(existing), seedComparable(candidate))) return existing;
+    if (JSON.stringify(seedComparable(existing)) === JSON.stringify(seedComparable(candidate))) return existing;
     throw new SharedSettingsInitializationConflictError(
       `Shared settings seed at ${this.seedPath} was initialized with conflicting settings.`,
     );

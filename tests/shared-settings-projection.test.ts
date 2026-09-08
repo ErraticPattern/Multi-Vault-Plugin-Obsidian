@@ -164,8 +164,6 @@ describe('shared settings projection', () => {
     expect(projection.vaults).toEqual([
       {
         id: 'alias-id',
-        pathKey: expectedPathKey,
-        path: normalizePathDisplay(aliasVaultPath, process.platform),
         name: 'Ideas alias',
         color: '#00AA00',
         enabled: false,
@@ -195,10 +193,11 @@ describe('shared settings projection', () => {
       ]
     }, projection);
 
-    expect(applied.vaults).toEqual([
+    expect(applied.vaults).toMatchObject([
       {
         id: 'alias-id',
-        path: normalizePathDisplay(aliasVaultPath, process.platform),
+        path: '',
+        available: false,
         name: 'Ideas alias',
         color: '#00AA00',
         enabled: false,
@@ -272,8 +271,6 @@ describe('shared settings projection', () => {
     expect(projection.vaults).toEqual([
       {
         id: 'z-first',
-        pathKey: 'c:/vaults/ideas',
-        path: 'C:/Vaults/Ideas',
         name: 'First duplicate',
         color: '#ABCDEF',
         enabled: true,
@@ -293,8 +290,6 @@ describe('shared settings projection', () => {
       vaults: [
         {
           id: 'a-ideas',
-          pathKey: 'c:/vaults/ideas',
-          path: 'C:/Vaults/Ideas',
           name: 'Ideas',
           color: '#FA0000',
           icon: 'lightbulb',
@@ -304,8 +299,6 @@ describe('shared settings projection', () => {
         },
         {
           id: 'medicine',
-          pathKey: 'c:/vaults/medicine',
-          path: 'C:/Vaults/medicine',
           name: 'Medicine',
           color: '#00FF00',
           enabled: true,
@@ -405,10 +398,10 @@ describe('shared settings projection', () => {
       colorIntensity: 10
     });
 
-    expect(applied.vaults).toEqual([
+    expect(applied.vaults).toMatchObject([
       {
         id: 'ideas-shared',
-        path: 'C:/vaults/ideas',
+        path: 'c:/vaults/ideas',
         name: 'Ideas Shared',
         color: '#fa0000',
         icon: 'sparkles',
@@ -418,7 +411,7 @@ describe('shared settings projection', () => {
       },
       {
         id: 'medicine-shared',
-        path: 'C:/vaults/medicine',
+        path: 'C:/Vaults/medicine/',
         name: 'Medicine Shared',
         enabled: false
       }

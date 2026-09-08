@@ -109,7 +109,7 @@ describe('shared settings view models', () => {
     );
     expect(preview.synchronizedFields).toEqual(SHARED_SETTING_FIELD_LABELS);
     expect(preview.sourcePath).toBe(loaded.dataPath);
-    expect(preview.vaults.every((vault) => path.isAbsolute(vault.path))).toBe(true);
+    expect(preview.vaults.every((vault) => vault.path === 'Resolved per device')).toBe(true);
     expect(loaded.seed.enabled).toBe(true);
     expect(loaded.seed.virtualLinks.colorIntensity).toBe(55);
     expect(JSON.stringify(loaded.seed)).not.toContain('Local only');

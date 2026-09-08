@@ -37,8 +37,10 @@ interface CurrentPathKeys {
   canonicalPathKey: string;
 }
 
-interface SharedVaultCandidate extends SharedVaultRecord {
+interface SharedVaultCandidate extends Omit<SharedVaultRecord, 'path' | 'pathKey'> {
   rawPathKey: string;
+  pathKey: string;
+  path: string;
 }
 
 function cloneSavedSearches(savedSearches: MultiVaultSettings['savedSearches']): MultiVaultSettings['savedSearches'] {
@@ -104,17 +106,12 @@ function resolveCurrentPathKeys(currentPathKey: string): CurrentPathKeys {
 }
 
 function toPublicSharedVaultRecord(vault: SharedVaultRecord): SharedVaultRecord {
-  return {
-    id: vault.id,
-    pathKey: vault.pathKey,
-    path: vault.path,
-    name: vault.name,
-    color: vault.color,
-    icon: vault.icon,
-    enabled: vault.enabled,
-    includePatterns: vault.includePatterns ? [...vault.includePatterns] : undefined,
-    excludePatterns: vault.excludePatterns ? [...vault.excludePatterns] : undefined,
-  };
+  const record: SharedVaultRecord = { id: vault.id, name: vault.name, enabled: vault.enabled };
+  if (vault.color !== undefined) record.color = vault.color;
+  if (vault.icon !== undefined) record.icon = vault.icon;
+  if (vault.includePatterns) record.includePatterns = [...vault.includePatterns];
+  if (vault.excludePatterns) record.excludePatterns = [...vault.excludePatterns];
+  return record;
 }
 
 function toSharedVaultCandidate(vault: VaultConfig, currentPathKey: string): SharedVaultCandidate {
@@ -237,48 +234,37 @@ function sanitizeVirtualLinks(
   };
 }
 
-function toVaultConfig(record: SharedVaultRecord): VaultConfig {
-  return {
+function toVaultConfig(record: SharedVaultRecord, localPath: string, existing?: VaultConfig): VaultConfig {
+  const vault: VaultConfig = {
     id: record.id,
     name: record.name,
-    path: record.path,
+    path: localPath,
     color: sanitizeColor(record.color),
     icon: record.icon,
     enabled: record.enabled,
     includePatterns: record.includePatterns ? [...record.includePatterns] : undefined,
     excludePatterns: record.excludePatterns ? [...record.excludePatterns] : undefined,
   };
+  if (existing?.available !== undefined) vault.available = existing.available;
+  else if (!localPath) vault.available = false;
+  return vault;
 }
 
 function sanitizeProjectionVaults(projection: SharedSettingsProjection): SharedVaultRecord[] {
-  const grouped = new Map<string, SharedVaultRecord[]>();
-
+  const byId = new Map<string, SharedVaultRecord>();
   for (const vault of projection.vaults) {
-    const platform = inferPlatformFromPath(vault.pathKey || vault.path);
-    const pathKey = normalizeExistingPathKey(vault.pathKey || vault.path, platform);
-    const candidate: SharedVaultRecord = {
+    if (byId.has(vault.id)) continue;
+    byId.set(vault.id, toPublicSharedVaultRecord({
       id: vault.id,
-      pathKey,
-      path: normalizePathDisplay(vault.path || vault.pathKey, platform),
       name: vault.name,
       color: sanitizeColor(vault.color),
       icon: vault.icon,
       enabled: vault.enabled === true,
       includePatterns: sanitizeStringArray(vault.includePatterns),
       excludePatterns: sanitizeStringArray(vault.excludePatterns),
-    };
-
-    const bucket = grouped.get(pathKey);
-    if (bucket) {
-      bucket.push(candidate);
-      continue;
-    }
-    grouped.set(pathKey, [candidate]);
+    }));
   }
-
-  return [...grouped.values()]
-    .map((candidates) => toPublicSharedVaultRecord(candidates[0]))
-    .sort((left, right) => left.pathKey.localeCompare(right.pathKey));
+  return [...byId.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
 export function projectSharedSettings(local: MultiVaultSettings, currentPathKey: string): SharedSettingsProjection {
@@ -301,22 +287,28 @@ export function applySharedProjection(local: MultiVaultSettings, projection: Sha
   const sanitizedVaults = sanitizeProjectionVaults(projection);
   const knownIds = new Set(sanitizedVaults.map((vault) => vault.id));
   const canonicalIdByAliasId = new Map(sanitizedVaults.map((vault) => [vault.id, vault.id]));
+  const existingVaultsById = new Map(local.vaults.map(vault => [vault.id, vault]));
+  const existingVaultsByName = new Map<string, VaultConfig[]>();
   const existingVaultsByPathKey = new Map<string, VaultConfig>();
-
   for (const vault of local.vaults) {
-    const platform = inferPlatformFromPath(vault.path);
-    existingVaultsByPathKey.set(normalizeExistingPathKey(vault.path, platform), vault);
+    const key = vault.name.toLowerCase();
+    existingVaultsByName.set(key, [...(existingVaultsByName.get(key) ?? []), vault]);
+    if (vault.path) {
+      const platform = inferPlatformFromPath(vault.path);
+      existingVaultsByPathKey.set(normalizeExistingPathKey(vault.path, platform), vault);
+    }
   }
 
   return {
     ...local,
     vaults: sanitizedVaults.map((vault) => {
-      const existing = existingVaultsByPathKey.get(vault.pathKey);
-      return toVaultConfig({
-        ...vault,
-        path: vault.path || (existing ? existing.path : vault.pathKey),
-        name: vault.name || existing?.name || vault.id,
-      });
+      const named = existingVaultsByName.get(vault.name.toLowerCase()) ?? [];
+      const source = projection.vaults.find(candidate => candidate.id === vault.id);
+      const legacyPath = source?.path || source?.pathKey || '';
+      const legacyPlatform = legacyPath ? inferPlatformFromPath(legacyPath) : process.platform;
+      const pathMatch = legacyPath ? existingVaultsByPathKey.get(normalizeExistingPathKey(legacyPath, legacyPlatform)) : undefined;
+      const existing = existingVaultsById.get(vault.id) ?? pathMatch ?? (named.length === 1 ? named[0] : undefined);
+      return toVaultConfig({ ...vault, name: vault.name || existing?.name || vault.id }, existing?.path || legacyPath, existing);
     }),
     indexOptions: cloneIndexOptions(local.indexOptions),
     savedSearches: cloneSavedSearches(local.savedSearches),
