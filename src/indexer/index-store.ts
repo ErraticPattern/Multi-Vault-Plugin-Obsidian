@@ -1,5 +1,7 @@
 import { App } from 'obsidian';
 import { IndexCache, IndexedFile } from '../types';
+import { VaultRegistry } from '../vault-registry';
+import { rebaseRelativePath } from '../vault-paths';
 
 export class IndexStore {
   private app: App;
@@ -39,7 +41,7 @@ export class IndexStore {
     }
   }
 
-  public async loadIndex(): Promise<IndexedFile[]> {
+  public async loadIndex(registry: VaultRegistry): Promise<{ files: IndexedFile[]; migrated: boolean }> {
     const dataPath = this.getPluginDataPath();
     if (dataPath) {
       const pluginDir = this.app.vault.configDir + '/plugins/multi-vault-navigator';
@@ -51,14 +53,35 @@ export class IndexStore {
           const content = await this.app.vault.adapter.read(filePath);
           const cache = JSON.parse(content) as IndexCache;
           if (cache.version === 2) {
-            return cache.files || [];
+            const aliases = registry.getIdAliases();
+            let migrated = false;
+            const files: IndexedFile[] = [];
+            for (const cached of cache.files || []) {
+              let vaultId = cached.vaultId;
+              const visited = new Set<string>();
+              while (aliases.has(vaultId) && !visited.has(vaultId)) {
+                visited.add(vaultId);
+                vaultId = aliases.get(vaultId)!;
+              }
+              const relativePath = cached.relativePath.replace(/\\/g, '/');
+              const vault = registry.getVaultById(vaultId);
+              let absolutePath = cached.absolutePath;
+              if (vault?.available) {
+                const rebased = rebaseRelativePath(vault.path, relativePath);
+                if (!rebased) { migrated = true; continue; }
+                absolutePath = rebased;
+              }
+              if (vaultId !== cached.vaultId || relativePath !== cached.relativePath || absolutePath !== cached.absolutePath) migrated = true;
+              files.push({ ...cached, vaultId, relativePath, absolutePath });
+            }
+            return { files, migrated };
           }
         }
       } catch {
-        return [];
+        return { files: [], migrated: false };
       }
     }
-    return [];
+    return { files: [], migrated: false };
   }
 
   public async clearIndex(): Promise<void> {

@@ -39,7 +39,14 @@ export class Indexer {
   }
 
   public async initialize(): Promise<void> {
-    this.indexedFiles = await this.store.loadIndex();
+    const loaded = await this.store.loadIndex(this.vaultRegistry);
+    this.indexedFiles = loaded.files;
+    if (loaded.migrated) {
+      await this.store.saveIndex(
+        loaded.files,
+        this.settings.indexOptions.storeSnippetsInCache !== false,
+      );
+    }
     this.emitCatalogChanged();
   }
 
