@@ -6,8 +6,8 @@ import { ExcludeSuggestModal } from './modals/exclude-suggest-modal';
 import { VirtualLinkTargetsModal } from './modals/virtual-link-targets-modal';
 import type { SharedSettingsPatch } from './shared-settings/shared-settings-store';
 import type { VirtualLinkColorMode } from './shared-settings/shared-settings-types';
-import { normalizeExistingPathKey, normalizePathDisplay } from './shared-settings/path-identity';
 import { DEFAULT_CROSS_VAULT_LINK_FORMAT, type CrossVaultLinkFormat } from './cross-vault-syntax';
+import { pickVaultFolder } from './vault-folder-picker';
 
 const VIRTUAL_LINKER_PLUGIN_ID = 'virtual-linker';
 const VIRTUAL_LINKER_REPOSITORY_URL = 'https://github.com/ErraticPattern/obsidian-virtual-linker';
@@ -163,7 +163,7 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
 
       return {
         name: nameText,
-        desc: vault.path ?? 'Unavailable on this device',
+        desc: vault.available === false ? 'Unavailable on this device' : vault.path,
         render: (setting: Setting) => {
           const changeColor = async (value: string): Promise<void> => {
             await this.changeSharedSetting(
@@ -203,6 +203,21 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
                 );
               })
             )
+            .addExtraButton(button => button
+              .setIcon('folder-open')
+              .setTooltip('Set folder on this device')
+              .onClick(async () => {
+                try {
+                  const selected = await pickVaultFolder();
+                  if (!selected || !this.vaultRegistry.relinkVault(vault.id, selected)) return;
+                  await this.plugin.saveSettings();
+                  await this.indexer.initialize();
+                  this.plugin.refreshSearchEngine();
+                  this.update();
+                } catch (error) {
+                  new Notice(error instanceof Error ? error.message : String(error));
+                }
+              }))
             .addButton(button => {
               button.setButtonText("Remove");
               markButtonDestructive(button);
@@ -450,27 +465,19 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
                   .setCta()
                   .onClick(async () => {
                     if (this.newVaultPath) {
-                      const name = this.newVaultPath.split(/[/\\]/).pop() || "Unnamed Vault";
-                      const vault = {
-                        id: `vault-${Date.now()}`,
-                        name,
-                        path: this.newVaultPath,
-                        enabled: true,
-                      };
-                      if (!this.vaultRegistry.validateVaultPath(vault.path)) {
-                        new Notice(`Invalid vault path: ${vault.path}`);
+                      const selectedPath = this.newVaultPath;
+                      if (!this.vaultRegistry.validateVaultPath(selectedPath)) {
+                        new Notice(`Invalid vault path: ${selectedPath}`);
                         return;
                       }
+                      const vault = {
+                        id: `vault-${Date.now()}`,
+                        name: selectedPath.split(/[/\\]/).pop() || 'Unnamed Vault',
+                        enabled: true,
+                      };
                       await this.changeSharedSetting(
-                        {
-                          kind: 'upsert-vault',
-                          vault: {
-                            ...vault,
-                            path: normalizePathDisplay(vault.path, process.platform),
-                            pathKey: normalizeExistingPathKey(vault.path, process.platform),
-                          },
-                        },
-                        () => { this.vaultRegistry.addVault(vault); },
+                        { kind: 'upsert-vault', vault },
+                        () => { this.vaultRegistry.addVault({ ...vault, path: selectedPath }); },
                       );
                       this.newVaultPath = "";
                       this.update();
