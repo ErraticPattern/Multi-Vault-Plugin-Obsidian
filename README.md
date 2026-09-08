@@ -85,8 +85,11 @@ Open the **Command Palette** (Ctrl/Cmd + P) and type `Multi-Vault Navigator` to 
 ## Settings
 
 Go to **Settings > Multi-Vault Navigator** to configure:
-- **Vault List**: Toggle indexing for specific vaults, configure custom colors and icons, or remove them.
-- **Add Manual Vault**: Add an absolute path to a vault if it wasn't auto-detected.
+- **Vault List**: Toggle indexing for specific vaults, configure custom colors and icons, remove them, or use the folder button to set a vault's location on this device.
+- **Portable vault paths**: Shared settings keep vault identity and appearance portable while absolute folders remain local to each device. Standard, XDG, Flatpak, and Snap Obsidian registries are detected automatically. A vault that cannot be found remains listed as unavailable until it is relinked.
+- **Add Manual Vault**: Add a vault that wasn't auto-detected. Paths may begin with `~`, `$HOME`, `${HOME}`, or `%USERPROFILE%`.
+
+Before converting legacy absolute-path settings, the plugin creates one-time `data.pre-portable-paths.json` and `index-cache.pre-portable-paths.json` backups beside the active files. It never overwrites these backups. To roll back, disable the plugin, replace `data.json` and `index-cache.json` with copies of the corresponding backup files, then reinstall the previous plugin build.
 - **Appearance**: Choose between "Classic" and "Modern Card" layouts for search results.
 - **Refresh & Clear Index**: Manually rebuild or wipe the cross-vault index cache. Normal startup refreshes only new, changed, or removed entries.
 - **Max Preview Characters**: Length of text snippets saved for search indexing.

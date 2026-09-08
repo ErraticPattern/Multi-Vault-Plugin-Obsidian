@@ -35,6 +35,8 @@ import { SharedSettingsStatusModal } from './modals/shared-settings-status-modal
 import { MultiVaultPublicApi } from './api/multi-vault-public-api';
 import type { MultiVaultPublicApiV1 } from './api/public-api-types';
 
+import { backupPortableMigrationFiles } from './portable-migration-backup';
+
 export const SYNC_SHARED_SETTINGS_COMMAND_ID = 'multi-vault-sync-shared-settings';
 export const SHOW_SHARED_SETTINGS_STATUS_COMMAND_ID = 'multi-vault-show-sync-status';
 
@@ -56,6 +58,11 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
 
   async onload() {
     await this.loadSettings();
+
+    if (this.settings.vaults.some(vault => vault.path)) {
+      const pluginDir = `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
+      await backupPortableMigrationFiles(this.app.vault.adapter, pluginDir);
+    }
 
     const adapter = this.app.vault.adapter;
     if (adapter instanceof FileSystemAdapter) {
@@ -81,6 +88,7 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
     }
 
     const hasAuthoritativeSharedSettings = this.sharedSettingsService?.hasAuthoritativeManifest() === true;
+
 
     // Initialize core modules
     this.vaultRegistry = new VaultRegistry(this.app, this.settings, {
