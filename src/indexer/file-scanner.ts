@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { VaultConfig } from '../types';
+import { AvailableVaultConfig } from '../types';
 
 export interface FileEntry {
   absolutePath: string;
@@ -19,7 +19,7 @@ export class FileScanner {
     this.globalExcludes = globalExcludes;
   }
 
-  private isPathExcluded(vault: VaultConfig, relativePath: string): boolean {
+  private isPathExcluded(vault: AvailableVaultConfig, relativePath: string): boolean {
     const lower = relativePath.replace(/\\/g, '/').toLowerCase();
     const segments = lower.split('/');
     if (segments.some((segment) => this.defaultExcludes.has(segment))) return true;
@@ -30,7 +30,7 @@ export class FileScanner {
       .some((pattern) => lower.includes(pattern) || fileName.includes(pattern));
   }
 
-  public isPathIncluded(vault: VaultConfig, relativePath: string): boolean {
+  public isPathIncluded(vault: AvailableVaultConfig, relativePath: string): boolean {
     if (this.isPathExcluded(vault, relativePath)) return false;
     const lower = relativePath.replace(/\\/g, '/').toLowerCase();
     const fileName = path.posix.basename(lower);
@@ -41,7 +41,7 @@ export class FileScanner {
       includes.some((pattern) => lower.includes(pattern) || fileName.includes(pattern));
   }
 
-  public async scanFileAsync(vault: VaultConfig, relativePath: string): Promise<FileEntry | null> {
+  public async scanFileAsync(vault: AvailableVaultConfig, relativePath: string): Promise<FileEntry | null> {
     const normalized = relativePath.replace(/\\/g, '/');
     if (
       path.posix.isAbsolute(normalized) ||
@@ -69,7 +69,7 @@ export class FileScanner {
     }
   }
 
-  public async scanVaultAsync(vault: VaultConfig): Promise<FileEntry[]> {
+  public async scanVaultAsync(vault: AvailableVaultConfig): Promise<FileEntry[]> {
     const files: FileEntry[] = [];
     const rootPath = vault.path;
 

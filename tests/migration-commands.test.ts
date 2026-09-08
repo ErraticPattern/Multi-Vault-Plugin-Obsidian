@@ -430,8 +430,8 @@ describe('MigrationController', () => {
       },
     };
     const vaults: VaultConfig[] = [
-      { id: 'ideas', name: 'ideas', path: 'C:/vaults/ideas', enabled: true },
-      { id: 'math', name: 'mathematics', path: 'C:/vaults/mathematics', enabled: true },
+      { id: 'ideas', name: 'ideas', path: 'C:/vaults/ideas', enabled: true, available: true },
+      { id: 'math', name: 'mathematics', path: 'C:/vaults/mathematics', enabled: true, available: true },
     ];
     let refreshes = 0;
     const appliedMutations: unknown[] = [];

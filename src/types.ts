@@ -1,16 +1,28 @@
 import { DEFAULT_CROSS_VAULT_LINK_FORMAT, type CrossVaultLinkFormat } from './cross-vault-syntax';
 import type { SharedVirtualLinkSettings } from './shared-settings/shared-settings-types';
 
-export interface VaultConfig {
+export interface SharedVaultConfig {
   id: string;
   name: string;
-  path: string;
   enabled: boolean;
   color?: string;
   icon?: string;
   includePatterns?: string[];
   excludePatterns?: string[];
+  path?: string;
 }
+
+export interface AvailableVaultConfig extends Omit<SharedVaultConfig, 'path'> {
+  path: string;
+  available: true;
+}
+
+export interface UnavailableVaultConfig extends Omit<SharedVaultConfig, 'path'> {
+  path: null;
+  available: false;
+}
+
+export type VaultConfig = AvailableVaultConfig | UnavailableVaultConfig;
 
 export interface IndexedFile {
   id: string;
@@ -42,7 +54,7 @@ export interface SharedSettingsMetadata {
 }
 
 export interface MultiVaultSettings {
-  vaults: VaultConfig[];
+  vaults: SharedVaultConfig[];
   indexOptions: IndexOptions;
   savedSearches: { id: string, name: string, query: string }[];
   pinnedFiles: string[];

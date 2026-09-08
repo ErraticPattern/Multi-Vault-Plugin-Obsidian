@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import { IndexedFile, VaultConfig } from '../types';
+import { AvailableVaultConfig, IndexedFile } from '../types';
 import { FileEntry } from './file-scanner';
 
 export class MarkdownParser {
@@ -9,7 +9,7 @@ export class MarkdownParser {
     this.maxPreviewChars = maxPreviewChars;
   }
 
-  public async parseMarkdownFileAsync(file: FileEntry, vault: VaultConfig): Promise<IndexedFile> {
+  public async parseMarkdownFileAsync(file: FileEntry, vault: AvailableVaultConfig): Promise<IndexedFile> {
     let content = '';
     try {
       content = await fs.promises.readFile(file.absolutePath, 'utf8');

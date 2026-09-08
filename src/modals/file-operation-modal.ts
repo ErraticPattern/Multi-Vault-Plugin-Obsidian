@@ -45,7 +45,7 @@ export class FileOperationModal extends Modal {
     this.contentEl.createEl('p', { text: `File: ${activeFile.path}` });
 
     const currentVaultId = this.vaultRegistry.getCurrentVaultId();
-    const otherVaults = this.vaultRegistry.getVaults().filter((vault) => vault.id !== currentVaultId);
+    const otherVaults = this.vaultRegistry.getEnabledVaults().filter((vault) => vault.id !== currentVaultId);
     if (otherVaults.length === 0) {
       this.contentEl.createEl('p', { text: 'No other vaults are configured.' });
       return;
@@ -73,7 +73,7 @@ export class FileOperationModal extends Modal {
       .setName('Destination folder (optional)')
       .setDesc('/ (vault root)')
       .addButton((button) => button.setButtonText('Choose folder').onClick(() => {
-        const vault = this.vaultRegistry.getVaultById(this.targetVaultId);
+        const vault = this.vaultRegistry.getAvailableVaultById(this.targetVaultId);
         if (!vault) {
           new Notice('Choose a target vault first.');
           return;

@@ -163,7 +163,7 @@ export class MultiVaultSettingsTab extends PluginSettingTab {
 
       return {
         name: nameText,
-        desc: vault.path,
+        desc: vault.path ?? 'Unavailable on this device',
         render: (setting: Setting) => {
           const changeColor = async (value: string): Promise<void> => {
             await this.changeSharedSetting(

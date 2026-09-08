@@ -2,7 +2,7 @@ import type { CrossVaultLinkFormat } from '../cross-vault-syntax';
 import type { App, TFile } from 'obsidian';
 import type { Indexer } from '../indexer/indexer';
 import type { VaultRegistry } from '../vault-registry';
-import type { IndexedFile, VaultConfig } from '../types';
+import type { AvailableVaultConfig, IndexedFile } from '../types';
 import { resolveDestinationPath } from './destination-paths';
 import { collectMigrationSnapshot } from './obsidian-snapshot';
 import { planMoveOrCopy, planStandaloneRelink } from './migration-planner';
@@ -217,15 +217,15 @@ export class MigrationController {
       file.vaultId === vaultId && isMarkdownExtension(file.extension));
   }
 
-  private requireCurrentVault(): VaultConfig {
+  private requireCurrentVault(): AvailableVaultConfig {
     const id = this.vaultRegistry.getCurrentVaultId();
     if (!id) throw new Error('Current vault is not configured');
     return this.requireVault(id);
   }
 
-  private requireVault(id: string): VaultConfig {
+  private requireVault(id: string): AvailableVaultConfig {
     const vault = this.vaultRegistry.getVaultById(id);
-    if (!vault) throw new Error(`Vault is not configured: ${id}`);
+    if (!vault || !vault.available) throw new Error(`Vault is unavailable: ${id}`);
     return vault;
   }
 }
