@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { LocalVaultPathStore, LocalPathFileSystem } from '../src/local-vault-path-store';
 
 function fakeFs(initial?: string, failRename = false) {
@@ -21,7 +21,10 @@ function fakeFs(initial?: string, failRename = false) {
 describe('local vault path store', () => {
   it('loads missing, malformed, and valid files safely', () => {
     expect(new LocalVaultPathStore('/config/local.json', fakeFs().fs).load().vaultPaths).toEqual({});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     expect(new LocalVaultPathStore('/config/local.json', fakeFs('{').fs).load().vaultPaths).toEqual({});
+    expect(error).toHaveBeenCalledOnce();
+    error.mockRestore();
     const valid = fakeFs(JSON.stringify({ version: 1, vaultPaths: { ideas: '/vault' } }));
     expect(new LocalVaultPathStore('/config/local.json', valid.fs).load().vaultPaths).toEqual({ ideas: '/vault' });
   });
