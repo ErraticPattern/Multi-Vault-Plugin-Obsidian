@@ -39,7 +39,10 @@ export class Indexer {
   }
 
   public async initialize(): Promise<void> {
-    const loaded = await this.store.loadIndex(this.vaultRegistry);
+    const loadedResult = await this.store.loadIndex(this.vaultRegistry);
+    const loaded = Array.isArray(loadedResult)
+      ? { files: loadedResult, migrated: false }
+      : loadedResult;
     this.indexedFiles = loaded.files;
     if (loaded.migrated) {
       await this.store.saveIndex(
