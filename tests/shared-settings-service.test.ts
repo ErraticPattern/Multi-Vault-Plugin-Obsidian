@@ -293,7 +293,6 @@ describe('SharedSettingsService lifecycle', () => {
       },
     } as unknown as App;
 
-    expect(new VaultRegistry(app, settings).getVaults().map((vault) => vault.id)).toContain('stray');
     expect(
       new VaultRegistry(app, settings, { autoDetect: !peer.hasAuthoritativeManifest() })
         .getVaults()

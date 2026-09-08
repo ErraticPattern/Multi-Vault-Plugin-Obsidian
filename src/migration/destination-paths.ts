@@ -57,7 +57,7 @@ export function resolveDestinationPath(
   fileName: string,
 ): { absolutePath: string; relativePath: string } {
   assertSimpleFileName(fileName);
-  if (folder !== '/' && path.isAbsolute(folder)) {
+  if (folder !== '/' && (path.posix.isAbsolute(folder) || path.win32.isAbsolute(folder))) {
     throw new UnsafeDestinationPathError(`Unsafe destination folder: ${folder}`);
   }
 
