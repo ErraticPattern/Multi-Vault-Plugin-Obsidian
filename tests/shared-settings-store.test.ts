@@ -128,6 +128,22 @@ describe('SharedSettingsStore immutable patch journal', () => {
     await expect(readdir(root)).resolves.toEqual([SHARED_SETTINGS_DIRECTORY_NAME]);
   });
 
+  it('migrates a schema-1 seed to a path-free schema-2 manifest in memory', async () => {
+    const { root, store } = await createStore();
+    await mkdir(journalPath(root), { recursive: true });
+    await writeFile(seedPath(root), JSON.stringify({
+      ...createProjection(),
+      schemaVersion: 1,
+      revision: 0,
+      updatedAt: '2026-08-10T12:00:00.000Z',
+      writerInstanceId: 'legacy-writer',
+    }), 'utf8');
+
+    const migrated = await store.read();
+    expect(migrated?.schemaVersion).toBe(2);
+    expect(migrated?.vaults.every(vault => vault.path === undefined && vault.pathKey === undefined)).toBe(true);
+  });
+
   it('folds every explicit patch and makes revision equal the patch count', async () => {
     const { root, store } = await createStore();
     await store.initialize(createProjection(), 'initializer');

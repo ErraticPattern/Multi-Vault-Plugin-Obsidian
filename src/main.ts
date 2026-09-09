@@ -35,7 +35,7 @@ import { SharedSettingsStatusModal } from './modals/shared-settings-status-modal
 import { MultiVaultPublicApi } from './api/multi-vault-public-api';
 import type { MultiVaultPublicApiV1 } from './api/public-api-types';
 
-import { backupPortableMigrationFiles } from './portable-migration-backup';
+import { backupPortableMigrationFiles, backupSharedSettingsJournal } from './portable-migration-backup';
 
 export const SYNC_SHARED_SETTINGS_COMMAND_ID = 'multi-vault-sync-shared-settings';
 export const SHOW_SHARED_SETTINGS_STATUS_COMMAND_ID = 'multi-vault-show-sync-status';
@@ -66,7 +66,9 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
 
     const adapter = this.app.vault.adapter;
     if (adapter instanceof FileSystemAdapter) {
-      this.sharedSettingsStore = new SharedSettingsStore(resolveSharedSettingsApplicationDataRoot());
+      const sharedSettingsRoot = resolveSharedSettingsApplicationDataRoot();
+      await backupSharedSettingsJournal(sharedSettingsRoot);
+      this.sharedSettingsStore = new SharedSettingsStore(sharedSettingsRoot);
       this.sharedSettingsWriterInstanceId = randomUUID();
       this.sharedSettingsService = new SharedSettingsService({
         store: this.sharedSettingsStore,
