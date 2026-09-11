@@ -59,6 +59,9 @@ Use **Relink Backlinks to Existing Cross-Vault Note** when the destination note 
 ### 7. Duplicate Note Detector
 Scan all your connected vaults to find notes with the exact same name, helping you merge scattered information.
 
+### 8. Resolve Missing Notes Across Vaults
+Run **Find unresolved links in other vaults** to review links whose notes do not exist in the current vault but do exist elsewhere. The dashboard groups every occurrence by target, selects unique matches automatically, and requires an explicit destination for ambiguous names. Selected links and embeds are converted without creating or moving notes, while aliases, headings, blocks, and unselected links remain intact. Source content is revalidated before writing and completed writes are rolled back if the operation fails.
+
 ---
 
 ## Commands
@@ -74,6 +77,7 @@ Open the **Command Palette** (Ctrl/Cmd + P) and type `Multi-Vault Navigator` to 
 - **Remove cross-vault links in current note**
 - **Remove cross-vault links in all notes**
 - **Find Duplicate Notes**
+- **Find unresolved links in other vaults**
 - **Open Global Tag Explorer**
 - **Open Cross-Vault Daily Notes**
 - **Refresh Index**

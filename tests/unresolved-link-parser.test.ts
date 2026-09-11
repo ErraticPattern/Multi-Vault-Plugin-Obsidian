@@ -14,7 +14,7 @@ describe('unresolved wikilink parser', () => {
   });
 
   it('excludes fenced code, inline code, escaped links, and existing cross-vault links', () => {
-    const content = '`[[inline]]`\n```md\n[[fenced]]\n```\n\\[[escaped]] [[fusion@mathematics]] [[mathematics::fusion]] [[real]]';
+    const content = '---\nalias: [[frontmatter]]\n---\n`[[inline]]`\n~~~~md\n[[fenced]]\n~~~~\n$[[formula]]$ \\[[escaped]] [[fusion@mathematics]] [[mathematics::fusion]] [[real]]';
     expect(parseWikilinkOccurrences(content).map(item => item.linkpath)).toEqual(['real']);
   });
 });
