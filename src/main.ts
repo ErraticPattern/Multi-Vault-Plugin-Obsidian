@@ -20,7 +20,9 @@ import { registerUnlinkCommands } from './unlink-commands';
 import { VIEW_TYPE_SEARCH_PAGE, SearchPageView } from './views/search-page-view';
 import { VIEW_TYPE_TAG_EXPLORER, TagExplorerView } from './views/tag-explorer-view';
 import { VIEW_TYPE_DAILY_DASHBOARD, DailyDashboardView } from './views/daily-dashboard-view';
+import { VIEW_TYPE_UNRESOLVED_LINKS, UnresolvedLinksView } from './views/unresolved-links-view';
 import { VIEW_TYPE_SIDEBAR, SidebarView } from './views/sidebar-view';
+import { UnresolvedLinksController } from './unresolved-links/unresolved-links-controller';
 import { Notice, WorkspaceLeaf } from 'obsidian';
 import { MigrationController } from './migration/migration-controller';
 import { registerMigrationCommands } from './migration/migration-commands';
@@ -47,6 +49,7 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
   searchEngine: SearchEngine;
   fileOpener: FileOpener;
   migrationController: MigrationController;
+  unresolvedLinksController: UnresolvedLinksController;
   sharedSettingsService: SharedSettingsService | null = null;
   private sharedSettingsStore: SharedSettingsStore | null = null;
   private sharedSettingsWriterInstanceId: string | null = null;
@@ -111,6 +114,12 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
       undefined,
       () => this.settings.crossVaultLinkFormat,
     );
+    this.unresolvedLinksController = new UnresolvedLinksController(
+      this.app,
+      this.indexer,
+      this.vaultRegistry,
+      () => this.settings.crossVaultLinkFormat ?? 'note-at-vault',
+    );
 
     // Initialize indexer (load cache)
     await this.indexer.initialize();
@@ -143,6 +152,10 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
     this.registerView(
       VIEW_TYPE_DAILY_DASHBOARD,
       (leaf) => new DailyDashboardView(leaf, this.indexer, this.fileOpener)
+    );
+    this.registerView(
+      VIEW_TYPE_UNRESOLVED_LINKS,
+      (leaf) => new UnresolvedLinksView(leaf, this.unresolvedLinksController)
     );
     this.registerView(
       VIEW_TYPE_SIDEBAR,
@@ -180,6 +193,16 @@ export default class MultiVaultNavigatorPlugin extends Plugin {
       callback: async () => {
         const leaf = this.app.workspace.getLeaf(true);
         await leaf.setViewState({ type: VIEW_TYPE_DAILY_DASHBOARD, active: true });
+        await this.app.workspace.revealLeaf(leaf);
+      }
+    });
+
+    this.addCommand({
+      id: 'multi-vault-unresolved-links',
+      name: 'Find unresolved links in other vaults',
+      callback: async () => {
+        const leaf = this.app.workspace.getLeaf(true);
+        await leaf.setViewState({ type: VIEW_TYPE_UNRESOLVED_LINKS, active: true });
         await this.app.workspace.revealLeaf(leaf);
       }
     });

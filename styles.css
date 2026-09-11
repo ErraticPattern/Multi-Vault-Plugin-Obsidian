@@ -753,3 +753,58 @@ button.mvn-btn-small:hover {
 .mvn-cross-vault-link-preview code {
   user-select: text;
 }
+
+/* Unresolved cross-vault link dashboard */
+.mvn-unresolved-links {
+  padding: var(--size-4-4);
+  max-width: 72rem;
+  margin: 0 auto;
+}
+
+.mvn-unresolved-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-2);
+  margin: var(--size-4-4) 0;
+}
+
+.mvn-unresolved-list {
+  display: grid;
+  gap: var(--size-4-3);
+}
+
+.mvn-unresolved-row {
+  padding: var(--size-4-3);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+}
+
+.mvn-unresolved-row-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--size-4-2);
+  margin-bottom: var(--size-4-2);
+}
+
+.mvn-unresolved-row-header span,
+.mvn-unresolved-summary,
+.mvn-unresolved-status {
+  color: var(--text-muted);
+}
+
+.mvn-unresolved-candidate {
+  width: min(100%, 34rem);
+  margin-bottom: var(--size-4-2);
+}
+
+.mvn-unresolved-error {
+  color: var(--text-error);
+}
+
+@media (max-width: 600px) {
+  .mvn-unresolved-links { padding: var(--size-4-2); }
+  .mvn-unresolved-toolbar .mod-cta { width: 100%; }
+  .mvn-unresolved-candidate { width: 100%; }
+}
